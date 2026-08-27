@@ -38,8 +38,8 @@ EXPORT_URL = f"{DEMNAS_SERVICE}/exportImage"
 
 # Official BIG province boundary layer
 PROVINCE_URL = (
-    "https://geoservices.big.go.id/gis/rest/services/"
-    "STIG/Batas_Provinsi/MapServer/0"
+    "https://geoservices.big.go.id/rbi/rest/services/"
+    "BATASWILAYAH/BATAS_WILAYAH/MapServer/12"
 )
 
 # Native pixel size reported by BIG ImageServer, EPSG:4326
@@ -80,51 +80,53 @@ def session_with_retries() -> requests.Session:
 
 def get_province_geometry(session: requests.Session, province: str):
     """
-    Fetch all province polygons from BIG (small dataset), then select locally.
-    This avoids depending on exact SQL casing/value assumptions.
+    Ambil polygon provinsi langsung dari layer RBI BIG.
+    Satu provinsi dapat terdiri dari banyak feature; semuanya digabung.
     """
     query_url = f"{PROVINCE_URL}/query"
+
+    sql_province = province.replace("'", "''")
+
     params = {
-        "where": "1=1",
-        "outFields": "WADMPR",
+        "where": f"wadmpr='{sql_province}'",
+        "outFields": "wadmpr",
         "returnGeometry": "true",
         "outSR": "4326",
         "f": "geojson",
     }
+
     print(f"[1/4] Mengambil batas provinsi resmi BIG: {province}")
-    r = session.get(query_url, params=params, timeout=120)
+
+    r = session.get(query_url, params=params, timeout=180)
     r.raise_for_status()
     data = r.json()
 
-    target = norm_name(province)
-    matches = []
-    available = []
+    features = data.get("features", [])
 
-    for feature in data.get("features", []):
-        name = str(feature.get("properties", {}).get("WADMPR", "")).strip()
-        if name:
-            available.append(name)
-        if norm_name(name) == target:
-            matches.append(shape(feature["geometry"]))
-
-    if not matches:
-        # Simple contains fallback for names such as "PROVINSI JAWA TIMUR"
-        for feature in data.get("features", []):
-            name = str(feature.get("properties", {}).get("WADMPR", "")).strip()
-            n = norm_name(name)
-            if target in n or n in target:
-                matches.append(shape(feature["geometry"]))
-
-    if not matches:
-        sample = ", ".join(sorted(set(available))[:20])
+    if not features:
         raise RuntimeError(
-            f"Provinsi '{province}' tidak ditemukan di layer BIG. "
-            f"Contoh nama yang tersedia: {sample}"
+            f"Provinsi '{province}' tidak ditemukan pada layer RBI BIG."
         )
 
-    geom = unary_union(matches)
+    geometries = [
+        shape(feature["geometry"])
+        for feature in features
+        if feature.get("geometry")
+    ]
+
+    if not geometries:
+        raise RuntimeError("Feature ditemukan tetapi geometry kosong.")
+
+    geom = unary_union(geometries)
+
     if geom.is_empty:
-        raise RuntimeError("Geometry provinsi kosong.")
+        raise RuntimeError("Geometry hasil union kosong.")
+
+    print(
+        f"      ditemukan {len(geometries)} feature; "
+        f"digabung menjadi {geom.geom_type}"
+    )
+
     return geom
 
 
@@ -315,6 +317,7 @@ def create_final_geotiff(tiles, geom, output: Path, extent, res):
         "blockxsize": 512,
         "blockysize": 512,
         "BIGTIFF": "YES",
+        "SPARSE_OK": "TRUE",
     }
 
     print(f"[3/4] Menyusun + mask ke batas provinsi: {output}")
