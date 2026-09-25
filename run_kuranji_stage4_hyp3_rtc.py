@@ -211,21 +211,32 @@ def do_submit(hyp3, selected):
     for role in ["PRE", "EVENT", "POST"]:
         if len(existing[role]) > 0:
             print(f"\n{role}: existing HyP3 job(s) already found with name {JOB_NAMES[role]}; not resubmitting.")
+            for existing_job in existing[role]:
+                print("  job_id:", getattr(existing_job, "job_id", ""))
+                print("  status:", getattr(existing_job, "status_code", ""))
             submitted[role] = existing[role]
             continue
 
         scene = selected[role].get("scene_name", "")
         if not scene:
             raise RuntimeError(f"Missing scene_name for {role}")
+
         print(f"\nSubmitting {role}: {scene}")
-        job = hyp3.submit_rtc_job(
+        batch = hyp3.submit_rtc_job(
             granule=scene,
             name=JOB_NAMES[role],
             **RTC_OPTIONS,
         )
-        print("  job_id:", job.job_id)
-        print("  status:", job.status_code)
-        # Query by stable name to keep state representation uniform.
+
+        # hyp3_sdk v7.7.8 returns a Batch, even for one submitted RTC job.
+        if len(batch) == 0:
+            raise RuntimeError(f"HyP3 returned an empty Batch after submitting {role}")
+        for submitted_job in batch:
+            print("  job_id:", getattr(submitted_job, "job_id", ""))
+            print("  status:", getattr(submitted_job, "status_code", ""))
+
+        # Re-query by stable name so reruns remain idempotent and the state file
+        # always contains the server-side representation of the job.
         submitted[role] = hyp3.find_jobs(name=JOB_NAMES[role])
 
     save_state(selected, submitted, credits)
