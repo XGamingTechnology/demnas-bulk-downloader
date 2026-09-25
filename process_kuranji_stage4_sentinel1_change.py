@@ -435,10 +435,12 @@ def main():
     (QC / "incidence_comparability.json").write_text(json.dumps(incidence_qc, ensure_ascii=False, indent=2), encoding="utf-8")
     write_stats_csv(QC / "descriptive_statistics.csv", stats_records)
 
-    readme = """# Kuranji Stage 4 — Sentinel-1 RTC change rasters\n\n"
-    readme += "Three matched Sentinel-1A ascending orbit-142 VV+VH RTC scenes were aligned to a common 20 m EPSG:32747 grid and clipped to the DAS Batang Kuranji.\n\n"
-    readme += "Primary evidence layers are raw aligned gamma0 dB rasters and temporal dB differences. A 3x3 NaN-aware median derivative is included only as a sensitivity/visual layer.\n\n"
-    readme += "No flood/change threshold has been selected here. Classification, if undertaken, must be independently evaluated against the BIG/BRIN observed flood extent and must not tune on the same reference without clearly separating calibration from validation.\n"
+    readme = (
+        "# Kuranji Stage 4 — Sentinel-1 RTC change rasters\n\n"
+        "Three matched Sentinel-1A ascending orbit-142 VV+VH RTC scenes were aligned to a common 20 m EPSG:32747 grid and clipped to the DAS Batang Kuranji.\n\n"
+        "Primary evidence layers are raw aligned gamma0 dB rasters and temporal dB differences. A 3x3 NaN-aware median derivative is included only as a sensitivity/visual layer.\n\n"
+        "No flood/change threshold has been selected here. Classification, if undertaken, must be independently evaluated against the BIG/BRIN observed flood extent and must not tune on the same reference without clearly separating calibration from validation.\n"
+    )
     (OUT / "README.md").write_text(readme, encoding="utf-8")
 
     print("\n=== DONE ===")
