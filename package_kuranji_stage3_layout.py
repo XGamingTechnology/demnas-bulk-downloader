@@ -227,8 +227,8 @@ def main():
         w.writerow(["No", "Layout", "Layer utama"])
         w.writerows(checklist)
 
-    (PKG / "LAYER_ORDER.txt").write_text(
-        """Recommended QGIS layer order (top -> bottom)\n"
+    layer_order_text = (
+        "Recommended QGIS layer order (top -> bottom)\n"
         "1. Labels / annotations\n"
         "2. Administrative boundaries\n"
         "3. DAS boundary\n"
@@ -237,25 +237,27 @@ def main():
         "6. Optional basemap/hillshade\n\n"
         "CRS utama: EPSG:32747 (WGS84 / UTM Zone 47S).\n"
         "Observed reference date: 1 Dec 2025.\n"
-        "P175 status: primary baseline hazard candidate, externally evaluated, NOT final calibrated hazard.\n",
-        encoding="utf-8",
+        "P175 status: primary baseline hazard candidate, externally evaluated, NOT final calibrated hazard.\n"
     )
+    (PKG / "LAYER_ORDER.txt").write_text(layer_order_text, encoding="utf-8")
 
-    readme = """# Paket Spatial Layouting Tahap 3 - DAS Batang Kuranji\n\n"
-    readme += "Observed reference: BIG/BRIN WorldView interpretation, 1 Dec 2025.\n"
-    readme += "CRS utama: EPSG:32747.\n\n"
-    readme += "P175 tetap berstatus primary baseline hazard candidate, externally evaluated.\n"
-    readme += "Strict r=0 adalah validasi utama; tolerance 1-5 pixel hanya sensitivity diagnostic.\n\n"
-    readme += "Folder:\n"
-    readme += "- 01_REFERENCE: DAS, RBI, administrasi\n"
-    readme += "- 02_OBSERVED_BIG_BRIN: observed source dan metadata\n"
-    readme += "- 03_MODEL_SCENARIOS: P175/P250/M175/M250\n"
-    readme += "- 04_VALIDATION_RASTER: confusion rasters\n"
-    readme += "- 05_VALIDATION_TABLE: metrik DAS/kecamatan/kelurahan\n"
-    readme += "- 06_POSITIONAL_TOLERANCE: QC offset spasial\n"
-    readme += "- 07_QC: validation QC\n"
-    readme += "- 08_DOCS: metode dan keputusan freeze\n"
-    readme += "- 09_QGIS_STYLE: style QML\n"
+    readme = (
+        "# Paket Spatial Layouting Tahap 3 - DAS Batang Kuranji\n\n"
+        "Observed reference: BIG/BRIN WorldView interpretation, 1 Dec 2025.\n"
+        "CRS utama: EPSG:32747.\n\n"
+        "P175 tetap berstatus primary baseline hazard candidate, externally evaluated.\n"
+        "Strict r=0 adalah validasi utama; tolerance 1-5 pixel hanya sensitivity diagnostic.\n\n"
+        "Folder:\n"
+        "- 01_REFERENCE: DAS, RBI, administrasi\n"
+        "- 02_OBSERVED_BIG_BRIN: observed source dan metadata\n"
+        "- 03_MODEL_SCENARIOS: P175/P250/M175/M250\n"
+        "- 04_VALIDATION_RASTER: confusion rasters\n"
+        "- 05_VALIDATION_TABLE: metrik DAS/kecamatan/kelurahan\n"
+        "- 06_POSITIONAL_TOLERANCE: QC offset spasial\n"
+        "- 07_QC: validation QC\n"
+        "- 08_DOCS: metode dan keputusan freeze\n"
+        "- 09_QGIS_STYLE: style QML\n"
+    )
     (PKG / "README_LAYOUTING_TAHAP3.md").write_text(readme, encoding="utf-8")
 
     if ZIP.exists():
