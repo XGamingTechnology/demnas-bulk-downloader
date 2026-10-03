@@ -76,6 +76,8 @@ class Client:
     def ids(self, where):
         result = self.request({'where': where, 'returnIdsOnly': 'true'})
         ids = result.get('objectIds')
+        if ids is None and result.get('objectIdFieldName'):
+            ids = []  # ArcGIS uses null for a successful query with no matches.
         field = result.get('objectIdFieldName')
         if not isinstance(ids, list) or not field or result.get('exceededTransferLimit'):
             raise DownloadError('Respons daftar ID tidak lengkap/valid.')
@@ -130,32 +132,97 @@ def text_bytes(value, limit=254):
     return str(value).encode('utf-8')[:limit].decode('utf-8', errors='ignore')
 
 
-def export(output, features, metadata):
+def source_polygon(source):
+    """Build a SHP shape without repairing, closing or discarding source rings."""
+    rings = source.get('rings', [])
+    if not rings or any(len(r) < 4 or r[0][:2] != r[-1][:2] for r in rings):
+        raise DownloadError('Ring harus berisi >=4 koordinat dan tertutup.')
+    points, parts = [], []
+    for ring in rings:
+        parts.append(len(points))
+        for xy in ring:
+            if len(xy) < 2 or any(not isinstance(v, (int, float)) or not math.isfinite(v) for v in xy[:2]):
+                raise DownloadError('Koordinat polygon tidak valid.')
+            points.append(xy[:2])
+    return shapefile.Shape(shapeType=shapefile.POLYGON, points=points, parts=parts)
+
+
+def feature_geometry(source, kind):
+    if not source:
+        raise DownloadError('Geometry kosong; raw tetap tersedia.')
+    if kind == 'esriGeometryPolygon':
+        return geometry(source.get('rings', []))
+    if kind == 'esriGeometryPoint':
+        xy = [source.get('x'), source.get('y')]
+        if any(not isinstance(v, (int, float)) or not math.isfinite(v) for v in xy):
+            raise DownloadError('Koordinat titik tidak valid.')
+        return {'type': 'Point', 'coordinates': xy}
+    if kind == 'esriGeometryPolyline':
+        paths = source.get('paths', [])
+        if not paths or any(len(p) < 2 for p in paths):
+            raise DownloadError('Garis kosong/tidak valid.')
+        for path in paths:
+            for xy in path:
+                if len(xy) < 2 or any(not isinstance(v, (int, float)) or not math.isfinite(v) for v in xy[:2]):
+                    raise DownloadError('Koordinat garis tidak valid.')
+        paths = [[xy[:2] for xy in path] for path in paths]
+        return {'type': 'LineString', 'coordinates': paths[0]} if len(paths) == 1 else {
+            'type': 'MultiLineString', 'coordinates': paths}
+    raise DownloadError(f'Jenis geometry belum didukung: {kind}')
+
+
+def export(output, features, metadata, prefix='wiup'):
     """Raw source is authoritative; SHP field map records DBF limitations."""
-    fields = [f['name'] for f in metadata['fields']]
-    save_json(output / 'wiup_raw.json', {'features': features, 'fields': metadata['fields'],
+    fields = [f['name'] for f in metadata['fields'] if f.get('type') != 'esriFieldTypeGeometry']
+    kind = metadata.get('geometryType', 'esriGeometryPolygon')
+    shape_type = {'esriGeometryPolygon': shapefile.POLYGON,
+                  'esriGeometryPoint': shapefile.POINT,
+                  'esriGeometryPolyline': shapefile.POLYLINE}[kind]
+    save_json(output / (prefix + '_raw.json'), {'features': features, 'fields': metadata['fields'],
                                         'spatialReference': {'wkid': 4326}})
     converted = []
+    quality = []
+    oid = next((f['name'] for f in metadata['fields'] if f.get('type') == 'esriFieldTypeOID'), 'objectid')
     for feature in features:
         attrs = feature['attributes']
         source = feature.get('geometry')
-        if not source or not source.get('rings'):
-            raise DownloadError(f'Geometry kosong untuk {attrs}; raw disimpan, ekspor dihentikan.')
+        if not source:
+            geo = None
+            quality.append({'id': attrs.get(oid), 'issue': 'null geometry', 'action': 'preserved as null shape'})
+        else:
+            try:
+                geo = feature_geometry(source, kind)
+            except DownloadError as error:
+                if kind != 'esriGeometryPolygon':
+                    raise
+                # Invalid topology may exist in the source. Preserve coordinates and
+                # source ring orientation; never call make_valid/buffer or drop features.
+                geo = source_polygon(source).__geo_interface__
+                quality.append({'id': attrs.get(oid), 'issue': str(error),
+                                'action': 'source rings preserved; GeoJSON grouped using SHP ring rules'})
         converted.append({'type': 'Feature', 'properties': attrs,
-                          'geometry': geometry(source['rings'])})
-    save_json(output / 'wiup.geojson', {'type': 'FeatureCollection', 'features': converted})
-    with (output / 'wiup.csv').open('w', newline='', encoding='utf-8-sig') as handle:
+                          'geometry': geo})
+    save_json(output / (prefix + '.geojson'), {'type': 'FeatureCollection', 'features': converted})
+    with (output / (prefix + '.csv')).open('w', newline='', encoding='utf-8-sig') as handle:
         writer = csv.DictWriter(handle, fieldnames=fields, extrasaction='raise')
         writer.writeheader()
         writer.writerows(f['attributes'] for f in features)
     field_map = {f'F{i:03d}': name for i, name in enumerate(fields)}
     truncated = []
-    with shapefile.Writer(str(output / 'wiup'), shapeType=shapefile.POLYGON, encoding='utf-8') as writer:
+    with shapefile.Writer(str(output / prefix), shapeType=shape_type, encoding='utf-8') as writer:
         # String fields preserve original identifiers and epochs. Full values in raw/GeoJSON/CSV.
         for short in field_map:
             writer.field(short, 'C', size=254)
         for feature in features:
-            writer.poly(feature['geometry']['rings'])
+            source = feature.get('geometry')
+            if not source:
+                writer.null()
+            elif kind == 'esriGeometryPolygon':
+                writer.shape(source_polygon(source))
+            elif kind == 'esriGeometryPoint':
+                writer.point(source['x'], source['y'])
+            else:
+                writer.line([[xy[:2] for xy in path] for path in source['paths']])
             values = []
             for field in fields:
                 value = feature['attributes'].get(field)
@@ -164,21 +231,26 @@ def export(output, features, metadata):
                     truncated.append({'id': feature['attributes'].get('objectid'), 'field': field})
                 values.append(text_bytes(value))
             writer.record(*values)
-    (output / 'wiup.prj').write_text(PRJ, encoding='ascii')
-    (output / 'wiup.cpg').write_text('UTF-8', encoding='ascii')
+    (output / (prefix + '.prj')).write_text(PRJ, encoding='ascii')
+    (output / (prefix + '.cpg')).write_text('UTF-8', encoding='ascii')
     save_json(output / 'field_map.json', {'fields': field_map, 'truncated_values': truncated,
                                          'nulls': 'DBF null menjadi string kosong; lihat GeoJSON/raw.'})
-    with zipfile.ZipFile(output / 'wiup_shp.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
-        for name in ['wiup.shp', 'wiup.shx', 'wiup.dbf', 'wiup.prj', 'wiup.cpg', 'field_map.json']:
+    save_json(output / 'geometry_quality.json', {'issues': quality, 'issue_count': len(quality),
+              'policy': 'Preserve source geometry; download completeness does not imply valid topology'})
+    with zipfile.ZipFile(output / (prefix + '_shp.zip'), 'w', zipfile.ZIP_DEFLATED) as archive:
+        for name in [prefix + ext for ext in ['.shp', '.shx', '.dbf', '.prj', '.cpg']] + ['field_map.json', 'geometry_quality.json']:
             archive.write(output / name, name)
+    if quality:
+        print(f'CATATAN: {len(quality)} fitur memiliki masalah geometri sumber; lihat geometry_quality.json.', flush=True)
+    return quality
 
 
-def download(client, where, output, batch_size, resume=False):
+def download(client, where, output, batch_size, resume=False, prefix='wiup', metadata=None):
     output.mkdir(parents=True, exist_ok=True)
     manifest_path = output / 'manifest.json'
-    metadata = client.request({}, query=False)
-    if metadata.get('geometryType') != 'esriGeometryPolygon':
-        raise DownloadError('Layer harus berupa polygon.')
+    metadata = metadata or client.request({}, query=False)
+    if metadata.get('geometryType') not in ('esriGeometryPolygon', 'esriGeometryPoint', 'esriGeometryPolyline'):
+        raise DownloadError('Layer harus berupa polygon, titik atau garis.')
     signature = {'service': client.service, 'where': where, 'fields': metadata.get('fields')}
     if manifest_path.exists():
         if not resume:
@@ -219,12 +291,14 @@ def download(client, where, output, batch_size, resume=False):
     if current_oid != oid or current_ids != ids:
         raise DownloadError('Daftar ID berubah selama unduhan. Gunakan folder baru untuk snapshot baru.')
     check_batch({'features': features}, ids, oid)
-    export(output, features, metadata)
+    quality = export(output, features, metadata, prefix)
     manifest.update(status='complete', count=len(features),
+                    geometry_issue_count=len(quality),
                     finished_utc=datetime.now(timezone.utc).isoformat(),
                     consistency='ID set stable; attributes may change during collection')
     save_json(manifest_path, manifest)
-    print(f'Selesai: {output / "wiup_shp.zip"}', flush=True)
+    print(f'Selesai: {output / (prefix + "_shp.zip")}', flush=True)
+    return manifest
 
 
 def make_where(args):

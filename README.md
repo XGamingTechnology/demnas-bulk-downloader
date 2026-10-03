@@ -131,4 +131,4 @@ Repo ini hanya downloader/client. Data DEMNAS dan batas administrasi tetap merup
 
 ## WIUP Minerba ESDM
 
-Downloader polygon dan atribut WIUP tersedia sebagai modul terpisah. Lihat [panduan Minerba](minerba/README.md) untuk unduh seluruh WIUP publik, per provinsi, atau PT Lumpo dalam SHP/GeoJSON/CSV.
+Downloader Minerba mendukung seluruh WIUP publik, filter khusus IUP, WP 2025, potensi batubara/mineral dan enam layer batas laut. Lihat [panduan Minerba](minerba/README.md) untuk unduh polygon, titik dan garis dalam SHP/GeoJSON/CSV dengan pemeriksaan kelengkapan dan resume.
