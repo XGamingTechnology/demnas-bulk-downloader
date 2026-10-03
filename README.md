@@ -128,3 +128,7 @@ Ini tidak mengunduh DEMNAS.
 ## Lisensi dan penggunaan data
 
 Repo ini hanya downloader/client. Data DEMNAS dan batas administrasi tetap merupakan data milik/layanan Badan Informasi Geospasial (BIG). Ikuti ketentuan penggunaan dan atribusi BIG untuk pemanfaatan datanya.
+
+## WIUP Minerba ESDM
+
+Downloader polygon dan atribut WIUP tersedia sebagai modul terpisah. Lihat [panduan Minerba](minerba/README.md) untuk unduh seluruh WIUP publik, per provinsi, atau PT Lumpo dalam SHP/GeoJSON/CSV.
