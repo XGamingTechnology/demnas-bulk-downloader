@@ -112,5 +112,6 @@ done
 echo
 echo "=== Summary ==="
 echo "Bodies and headers saved under: $OUT"
+echo "Catatan: file *.headers dapat memuat Set-Cookie; jangan dibagikan mentah."
 echo "This probe intentionally avoids auth bypass, token/cookie reuse,"
 echo "origin/path obfuscation, and access-control evasion."
