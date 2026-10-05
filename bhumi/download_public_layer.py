@@ -1385,7 +1385,7 @@ def main() -> int:
     print_layer(row)
 
     category = classify(row)
-    if not args.probe and not args.download:
+    if not args.probe and not args.download and not args.diagnose_wfs:
         return 0
 
     try:
