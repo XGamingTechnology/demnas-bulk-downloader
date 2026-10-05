@@ -14,6 +14,8 @@ Features:
 
 Notes:
 - Defaults to WMS 1.1.1 to avoid EPSG:4326 axis-order surprises in WMS 1.3.0.
+- Rasterio is only required when downloading/creating GeoTIFFs. Capabilities
+  discovery and layer listing only need requests.
 - This script downloads what the WMS advertises/renders. It does not bypass
   authentication or access controls.
 """
@@ -21,7 +23,6 @@ Notes:
 from __future__ import annotations
 
 import argparse
-import io
 import sys
 import time
 import xml.etree.ElementTree as ET
@@ -29,10 +30,6 @@ from pathlib import Path
 from typing import Iterable
 
 import requests
-import rasterio
-from rasterio.io import MemoryFile
-from rasterio.merge import merge
-from rasterio.transform import from_bounds
 
 
 DEFAULT_URL = "http://127.0.0.1:8765/bhumi/wms"
@@ -199,12 +196,29 @@ def get_map(
     return response.content
 
 
+def require_rasterio():
+    try:
+        import rasterio
+        from rasterio.io import MemoryFile
+        from rasterio.merge import merge
+        from rasterio.transform import from_bounds
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "Fitur download GeoTIFF membutuhkan rasterio. "
+            "Install dependency terlebih dahulu, misalnya di virtualenv: "
+            "python3 -m venv .venv && source .venv/bin/activate && "
+            "pip install -r requirements.txt"
+        ) from exc
+    return rasterio, MemoryFile, merge, from_bounds
+
+
 def image_bytes_to_geotiff(
     image_bytes: bytes,
     bbox: tuple[float, float, float, float],
     crs: str,
     output_path: Path,
 ) -> None:
+    rasterio, MemoryFile, _merge, from_bounds = require_rasterio()
     minx, miny, maxx, maxy = bbox
 
     with MemoryFile(image_bytes) as memfile:
@@ -233,6 +247,7 @@ def image_bytes_to_geotiff(
 
 
 def mosaic_tiles(tile_paths: list[Path], output_path: Path) -> None:
+    rasterio, _MemoryFile, merge, _from_bounds = require_rasterio()
     datasets = [rasterio.open(path) for path in tile_paths]
     try:
         mosaic, transform = merge(datasets)
@@ -318,6 +333,8 @@ def main() -> int:
 
     if args.cols < 1 or args.rows < 1:
         parser.error("--cols dan --rows minimal 1")
+
+    require_rasterio()
 
     workdir = Path(args.workdir)
     workdir.mkdir(parents=True, exist_ok=True)
