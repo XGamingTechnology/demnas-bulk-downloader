@@ -560,6 +560,28 @@ def resolve_wfs_typename(
     )
 
 
+def wfs_bbox_params(
+    url: str,
+    bbox: tuple[float, float, float, float] | None,
+) -> dict[str, str]:
+    """Build BBOX parameters accepted by standard WFS and GISTARU wrapper."""
+    if not bbox:
+        return {}
+
+    minx, miny, maxx, maxy = bbox
+    coords = f"{minx},{miny},{maxx},{maxy}"
+
+    if "gistaru-app.atrbpn.go.id/interoppublic/api/wms/" in url:
+        return {
+            "BBOX": coords,
+            "SRS": "EPSG:4326",
+        }
+
+    return {
+        "bbox": f"{coords},EPSG:4326",
+    }
+
+
 def parse_wfs_hits(content: bytes) -> int | None:
     """Parse WFS resultType=hits count from WFS 1.x/2.x response."""
     try:
@@ -587,8 +609,7 @@ def wfs_hit_count(
     bbox: tuple[float, float, float, float],
     timeout: int,
 ) -> int | None:
-    minx, miny, maxx, maxy = bbox
-    bbox_value = f"{minx},{miny},{maxx},{maxy},EPSG:4326"
+    bbox_params = wfs_bbox_params(url, bbox)
 
     attempts = [
         ("2.0.0", "typeNames"),
@@ -604,8 +625,8 @@ def wfs_hit_count(
             type_param: typename,
             "resultType": "hits",
             "srsName": "EPSG:4326",
-            "bbox": bbox_value,
         }
+        params.update(bbox_params)
         try:
             r = session.get(
                 url,
@@ -640,8 +661,7 @@ def wfs_sample_has_feature(
     usable numberMatched/numberOfFeatures for resultType=hits. In that case,
     request one GeoJSON feature instead.
     """
-    minx, miny, maxx, maxy = bbox
-    bbox_value = f"{minx},{miny},{maxx},{maxy},EPSG:4326"
+    bbox_params = wfs_bbox_params(url, bbox)
 
     attempts = [
         ("2.0.0", "typeNames", "count", "application/json"),
@@ -663,8 +683,8 @@ def wfs_sample_has_feature(
             limit_param: "1",
             "outputFormat": output_format,
             "srsName": "EPSG:4326",
-            "bbox": bbox_value,
         }
+        params.update(bbox_params)
 
         try:
             r = session.get(
@@ -1023,10 +1043,7 @@ def wfs_download(
     else:
         print(f"WFS typename: {typename}")
 
-    bbox_value = None
-    if bbox:
-        minx, miny, maxx, maxy = bbox
-        bbox_value = f"{minx},{miny},{maxx},{maxy},EPSG:4326"
+    bbox_params = wfs_bbox_params(url, bbox)
 
     attempts = [
         ("2.0.0", "typeNames", "application/json"),
@@ -1048,8 +1065,7 @@ def wfs_download(
             "outputFormat": output_format,
             "srsName": "EPSG:4326",
         }
-        if bbox_value:
-            params["bbox"] = bbox_value
+        params.update(bbox_params)
 
         try:
             r = session.get(
