@@ -49,6 +49,7 @@ import requests
 BASE = "https://bhumi.atrbpn.go.id"
 CATALOG_URL = f"{BASE}/panel/items/layers"
 DEFAULT_TIMEOUT = 60
+PERSIL_WMTS_TEMPLATE = "https://bhumi.atrbpn.go.id/mapproxy/wmts/bhumi_persil/localgrid_high/{z}/{x}/{y}.png"
 
 
 def fetch_catalog(session: requests.Session, timeout: int) -> list[dict]:
@@ -98,6 +99,12 @@ def find_layer(rows: list[dict], name: str | None, layer_id: str | None) -> dict
 
 
 def classify(row: dict) -> str:
+    name = str(row.get("name") or "").strip().lower()
+    service_layer = str(row.get("map_service_layer_name") or "").strip().lower()
+
+    if name == "bidang tanah" or service_layer == "umum:persil":
+        return "bhumi-persil-wmts"
+
     vendor = str(row.get("map_service_vendor") or "").strip().lower()
     url = str(row.get("map_service_url") or "").strip()
     url_l = url.lower()
@@ -1290,6 +1297,117 @@ def lat2tile(lat: float, zoom: int) -> int:
     )
 
 
+def persil_wmts_probe(
+    session: requests.Session,
+    bbox: tuple[float, float, float, float] | None,
+    zoom: int | None,
+    timeout: int,
+) -> None:
+    print(f"Persil WMTS template: {PERSIL_WMTS_TEMPLATE}")
+    print("tile matrix: localgrid_high")
+    print("tile size: 256")
+
+    if bbox is None or zoom is None:
+        print("Tambahkan --bbox dan --zoom untuk probe satu tile aktual.")
+        return
+
+    minlon, minlat, maxlon, maxlat = bbox
+    clon = (minlon + maxlon) / 2.0
+    clat = (minlat + maxlat) / 2.0
+    x = lon2tile(clon, zoom)
+    y = lat2tile(clat, zoom)
+    url = (
+        PERSIL_WMTS_TEMPLATE
+        .replace("{z}", str(zoom))
+        .replace("{x}", str(x))
+        .replace("{y}", str(y))
+    )
+
+    r = session.get(url, timeout=timeout, allow_redirects=True)
+    r.raise_for_status()
+    ctype = r.headers.get("content-type", "").lower()
+    prefix = r.content[:32]
+
+    print(f"probe z/x/y: {zoom}/{x}/{y}")
+    print(f"HTTP: {r.status_code}")
+    print(f"Content-Type: {ctype}")
+    print(f"Bytes: {len(r.content)}")
+
+    if prefix.startswith(b"\x89PNG\r\n\x1a\n"):
+        print("RESULT: PNG")
+        return
+    if prefix[:3] == b"\xff\xd8\xff":
+        print("RESULT: JPEG")
+        return
+
+    raise RuntimeError(
+        "Response tile bukan PNG/JPEG. "
+        f"Content-Type={ctype}; preview={r.text[:500]!r}"
+    )
+
+
+def persil_wmts_download(
+    session: requests.Session,
+    bbox: tuple[float, float, float, float],
+    zoom: int,
+    output_dir: Path,
+    timeout: int,
+    delay: float,
+    max_tiles: int,
+) -> None:
+    minlon, minlat, maxlon, maxlat = bbox
+    x0 = lon2tile(minlon, zoom)
+    x1 = lon2tile(maxlon, zoom)
+    y0 = lat2tile(maxlat, zoom)
+    y1 = lat2tile(minlat, zoom)
+
+    count = (x1 - x0 + 1) * (y1 - y0 + 1)
+    if count > max_tiles:
+        raise RuntimeError(
+            f"Permintaan Persil mencakup {count} tile, melewati "
+            f"--max-tiles={max_tiles}. Perkecil AOI/zoom atau naikkan limit "
+            "secara sadar."
+        )
+
+    print(
+        f"Persil WMTS z={zoom}: x={x0}..{x1}, "
+        f"y={y0}..{y1}, tiles={count}"
+    )
+    print(f"template: {PERSIL_WMTS_TEMPLATE}")
+
+    downloaded = 0
+    for x in range(x0, x1 + 1):
+        for y in range(y0, y1 + 1):
+            url = (
+                PERSIL_WMTS_TEMPLATE
+                .replace("{z}", str(zoom))
+                .replace("{x}", str(x))
+                .replace("{y}", str(y))
+            )
+            r = session.get(url, timeout=timeout, allow_redirects=True)
+            r.raise_for_status()
+
+            prefix = r.content[:32]
+            if prefix.startswith(b"\x89PNG\r\n\x1a\n"):
+                ext = ".png"
+            elif prefix[:3] == b"\xff\xd8\xff":
+                ext = ".jpg"
+            else:
+                raise RuntimeError(
+                    f"Tile {zoom}/{x}/{y} bukan image valid; "
+                    f"Content-Type={r.headers.get('content-type', '')}"
+                )
+
+            out = output_dir / str(zoom) / str(x) / f"{y}{ext}"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(r.content)
+            downloaded += 1
+            print(f"[{downloaded}/{count}] {out}")
+
+            if delay:
+                time.sleep(delay)
+
+
 def xyz_download(
     session: requests.Session,
     row: dict,
@@ -1430,6 +1548,34 @@ def main() -> int:
                 args.timeout,
                 forced_typename=args.typename,
             )
+            return 0
+
+        if category == "bhumi-persil-wmts":
+            if args.download:
+                if not args.bbox or args.zoom is None:
+                    print(
+                        "ERROR: Bidang Tanah WMTS download memerlukan "
+                        "--bbox dan --zoom.",
+                        file=sys.stderr,
+                    )
+                    return 4
+                outdir = Path(args.output or "output/bhumi_persil")
+                persil_wmts_download(
+                    session,
+                    args.bbox,
+                    args.zoom,
+                    outdir,
+                    args.timeout,
+                    args.delay,
+                    args.max_tiles,
+                )
+            else:
+                persil_wmts_probe(
+                    session,
+                    args.bbox,
+                    args.zoom,
+                    args.timeout,
+                )
             return 0
 
         if category == "bhumi-wrapper":
