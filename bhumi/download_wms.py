@@ -2,7 +2,10 @@
 """
 BHUMI WMS downloader.
 
-Designed for a local/proxied WMS endpoint such as:
+Default upstream confirmed from a BHUMI browser HAR captured on 2026-10-05:
+    https://bhumi.atrbpn.go.id/expapi/bhumigs/umum/wms
+
+A local reverse proxy can still be used when desired:
     http://127.0.0.1:8765/bhumi/wms
 
 Features:
@@ -32,8 +35,14 @@ from typing import Iterable
 import requests
 
 
-DEFAULT_URL = "http://127.0.0.1:8765/bhumi/wms"
+DEFAULT_URL = "https://bhumi.atrbpn.go.id/expapi/bhumigs/umum/wms"
+DEFAULT_REFERER = "https://bhumi.atrbpn.go.id/"
 DEFAULT_VERSION = "1.1.1"
+
+HAR_CONFIRMED_LAYERS = (
+    "umum:Persil",
+    "umum:penunjukan_kawasan_hutan",
+)
 
 
 def request_with_retry(
@@ -59,6 +68,34 @@ def request_with_retry(
     raise RuntimeError(last_exc)
 
 
+def validate_capabilities(response: requests.Response) -> bytes:
+    body = response.content
+    prefix = body[:4000].lower()
+    ctype = response.headers.get("Content-Type", "").lower()
+
+    if b"<html" in prefix or "text/html" in ctype:
+        final_url = response.url
+        raise RuntimeError(
+            "Endpoint mengembalikan HTML, bukan WMS GetCapabilities. "
+            f"Final URL: {final_url}. Ini bisa berarti redirect/login atau endpoint berubah."
+        )
+
+    if (
+        b"wmt_ms_capabilities" not in prefix
+        and b"wms_capabilities" not in prefix
+        and b"serviceexception" not in prefix
+    ):
+        try:
+            ET.fromstring(body)
+        except ET.ParseError as exc:
+            raise RuntimeError(
+                "Response bukan XML GetCapabilities yang valid. "
+                f"Content-Type={ctype or '(kosong)'}"
+            ) from exc
+
+    return body
+
+
 def get_capabilities(
     session: requests.Session,
     url: str,
@@ -72,14 +109,15 @@ def get_capabilities(
         "REQUEST": "GetCapabilities",
         "VERSION": version,
     }
-    return request_with_retry(
+    response = request_with_retry(
         session,
         url,
         params=params,
         timeout=timeout,
         retries=retries,
         delay=delay,
-    ).content
+    )
+    return validate_capabilities(response)
 
 
 def local_name(tag: str) -> str:
@@ -189,7 +227,8 @@ def get_map(
     )
 
     ctype = response.headers.get("Content-Type", "").lower()
-    if "xml" in ctype or "text" in ctype:
+    prefix = response.content[:1000].lower()
+    if "xml" in ctype or "text" in ctype or b"<html" in prefix:
         text = response.text[:2000]
         raise RuntimeError(f"WMS mengembalikan error/non-image:\n{text}")
 
@@ -273,9 +312,15 @@ def main() -> int:
         description="Download layer BHUMI/OGC WMS menjadi GeoTIFF."
     )
     parser.add_argument("--url", default=DEFAULT_URL, help="URL endpoint WMS")
+    parser.add_argument("--referer", default=DEFAULT_REFERER, help="HTTP Referer")
     parser.add_argument("--version", default=DEFAULT_VERSION, choices=["1.1.1", "1.3.0"])
     parser.add_argument("--capabilities", action="store_true", help="Simpan GetCapabilities")
     parser.add_argument("--list-layers", action="store_true", help="Tampilkan daftar layer")
+    parser.add_argument(
+        "--known-layers",
+        action="store_true",
+        help="Tampilkan layer yang sudah terkonfirmasi dari HAR tanpa request jaringan",
+    )
     parser.add_argument("--layer", help="Nama layer WMS")
     parser.add_argument("--bbox", type=parse_bbox, help="minx,miny,maxx,maxy")
     parser.add_argument("--crs", default="EPSG:4326")
@@ -294,8 +339,21 @@ def main() -> int:
     parser.add_argument("--delay", type=float, default=1.0)
     args = parser.parse_args()
 
+    if args.known_layers:
+        print("Layer terkonfirmasi dari HAR:")
+        for layer in HAR_CONFIRMED_LAYERS:
+            print(f"  {layer}")
+        if not (args.capabilities or args.list_layers or args.layer or args.bbox):
+            return 0
+
     session = requests.Session()
-    session.headers.update({"User-Agent": "demnas-bulk-downloader/bhumi-wms"})
+    session.headers.update(
+        {
+            "User-Agent": "Mozilla/5.0 (compatible; demnas-bulk-downloader/1.0)",
+            "Accept": "application/xml,text/xml,image/png,image/*,*/*;q=0.8",
+            "Referer": args.referer,
+        }
+    )
 
     capabilities_xml = None
     if args.capabilities or args.list_layers:
@@ -325,7 +383,8 @@ def main() -> int:
         if args.capabilities or args.list_layers:
             return 0
         parser.error(
-            "Gunakan --list-layers / --capabilities, atau berikan --layer dan --bbox."
+            "Gunakan --list-layers / --capabilities / --known-layers, "
+            "atau berikan --layer dan --bbox."
         )
 
     if not args.layer or not args.bbox:
