@@ -52,6 +52,15 @@ def fetch_catalog(limit: int, pages: int, timeout: int) -> list[dict]:
 
 
 def classify(row: dict) -> tuple[str, str]:
+    name = str(row.get("name") or "").strip().lower()
+    service_layer = str(row.get("map_service_layer_name") or "").strip().lower()
+
+    if name == "bidang tanah" or service_layer == "umum:persil":
+        return (
+            "bhumi-persil-wms",
+            "Verified: public WMS GetMap raster works; tiled GeoTIFF mosaic supported",
+        )
+
     vendor = str(row.get("map_service_vendor") or "").strip()
     url = str(row.get("map_service_url") or "").strip()
     layer = str(row.get("map_service_layer_name") or "").strip()
