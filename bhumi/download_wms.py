@@ -339,6 +339,10 @@ def main() -> int:
     parser.add_argument("--styles", default="")
     parser.add_argument("--opaque", action="store_true", help="Nonaktifkan transparansi")
     parser.add_argument("--output", default="bhumi_output.tif")
+    parser.add_argument(
+        "--raw-image",
+        help="Simpan response GetMap mentah (PNG/JPEG) tanpa rasterio; untuk satu tile.",
+    )
     parser.add_argument("--workdir", default=".bhumi_tiles")
     parser.add_argument("--keep-tiles", action="store_true")
     parser.add_argument("--timeout", type=int, default=120)
@@ -399,6 +403,31 @@ def main() -> int:
 
     if args.cols < 1 or args.rows < 1:
         parser.error("--cols dan --rows minimal 1")
+
+    if args.raw_image:
+        if args.cols != 1 or args.rows != 1:
+            parser.error("--raw-image saat ini hanya mendukung --cols 1 --rows 1")
+        image_bytes = get_map(
+            session,
+            args.url,
+            version=args.version,
+            layer=args.layer,
+            bbox=args.bbox,
+            crs=args.crs,
+            width=args.width,
+            height=args.height,
+            image_format=args.image_format,
+            transparent=not args.opaque,
+            styles=args.styles,
+            timeout=args.timeout,
+            retries=args.retries,
+            delay=args.delay,
+        )
+        raw_path = Path(args.raw_image)
+        raw_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_path.write_bytes(image_bytes)
+        print(f"Raw GetMap disimpan: {raw_path.resolve()} ({len(image_bytes)} bytes)")
+        return 0
 
     require_rasterio()
 
