@@ -234,10 +234,20 @@ def get_map(
     )
 
     ctype = response.headers.get("Content-Type", "").lower()
-    prefix = response.content[:1000].lower()
-    if "xml" in ctype or "text" in ctype or b"<html" in prefix:
-        text = response.text[:2000]
-        raise RuntimeError(f"WMS mengembalikan error/non-image:\n{text}")
+    prefix = response.content[:2000].lstrip().lower()
+    if (
+        "xml" in ctype
+        or "text" in ctype
+        or prefix.startswith(b"<?xml")
+        or b"<serviceexception" in prefix
+        or b"<ows:exception" in prefix
+        or b"<html" in prefix
+    ):
+        text = response.text[:4000]
+        raise RuntimeError(
+            "WMS mengembalikan response non-image/error "
+            f"(HTTP {response.status_code}, Content-Type={ctype or '(kosong)'}):\n{text}"
+        )
 
     return response.content
 
