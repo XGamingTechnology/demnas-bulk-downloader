@@ -149,3 +149,42 @@ python3 bhumi/download_public_layer.py \
 
 Jika endpoint diblokir, output akan menampilkan
 `STATUS: SERVER_SIDE_BLOCKED` beserta konfigurasi client WMTS.
+
+
+## Checkpoint Persil raster berhasil
+
+Pengujian VPS pada 6 Oktober 2026 berhasil menghasilkan mosaic GeoTIFF
+**Bidang Tanah / Persil** melalui WMS `GetMap` dari
+`https://bhumi.atrbpn.go.id/mprx/service`.
+
+Hasil terverifikasi:
+
+- grid: `4 x 3`
+- pixel per tile: `1600 x 1200`
+- raster akhir: `6400 x 3600`
+- CRS: `EPSG:3857` (WGS 84 / Pseudo-Mercator)
+- output uji: `output/bhumi_persil_sumsel.tif`
+- ukuran file uji: sekitar `2.5 MB`
+- compression: `DEFLATE`
+- valid pixel statistics pada pengujian: sekitar `41.59%`
+
+BBOX pengujian:
+
+```text
+104.08144856688278,-3.508670771548452,104.43584512679433,-3.3288696787825245
+```
+
+Status akses Persil yang sudah diuji:
+
+- WMS `GetMap`: **HTTP 200 / image/png**
+- WMS `GetCapabilities`: **HTTP 403**
+- WMS `GetFeatureInfo`: **HTTP 403** untuk request JSON yang diuji
+- WMTS `GetCapabilities`: **HTTP 403**
+- WMTS `GetTile`: **HTTP 403**
+
+GeoTIFF ini adalah raster render dan bukan sumber vector/NIB.
+
+Untuk diagnosis tambahan `GetFeatureInfo` secara aman, gunakan
+`bhumi/test_persil_getfeatureinfo.sh`. Script hanya mencoba variasi WMS standar
+dan pemeriksaan HTTP biasa. Script tidak mencoba bypass autentikasi, cookie/token,
+path/encoding obfuscation, atau manipulasi access-control.
