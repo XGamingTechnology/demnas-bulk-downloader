@@ -83,3 +83,29 @@ membutuhkannya dan axis order-nya sudah diverifikasi.
 
 Gunakan hanya layer dan data yang memang diizinkan untuk diakses/diunduh oleh
 layanan terkait.
+
+
+## Audit HAR BHUMI
+
+BHUMI versi baru tidak selalu mengekspos satu URL WMS yang bisa diasumsikan
+stabil. Untuk menemukan endpoint yang benar dari browser, gunakan HAR analyzer:
+
+```bash
+python3 bhumi/analyze_har.py /path/to/bhumi.har --details
+```
+
+Capture HAR yang berguna harus dilakukan dengan Network filter **All**:
+
+1. buka DevTools → Network;
+2. aktifkan **Persist Logs** bila tersedia;
+3. reload halaman `https://bhumi.atrbpn.go.id/peta`;
+4. aktifkan layer yang ingin diambil (mis. Bidang Tanah);
+5. klik satu objek sampai panel informasinya muncul;
+6. Save All As HAR.
+
+Analyzer mencari WMS/WFS/GeoServer/ArcGIS/vector-tile serta endpoint BHUMI seperti
+`expapi`, `getPersil`, `rating_layer`, `persil`, dan `bidang`.
+
+**Jangan commit HAR mentah.** HAR sering memuat cookie, session token, header
+authorization, dan data privat. File HAR harus tetap lokal dan masuk
+`.gitignore`.
