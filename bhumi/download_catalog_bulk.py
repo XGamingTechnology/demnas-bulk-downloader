@@ -57,6 +57,41 @@ def save_manifest(path: Path, manifest: dict) -> None:
     )
 
 
+def point_coords(value):
+    if not isinstance(value, dict):
+        return None
+    coords = value.get("coordinates")
+    if not isinstance(coords, (list, tuple)) or len(coords) < 2:
+        return None
+    try:
+        return float(coords[0]), float(coords[1])
+    except (TypeError, ValueError):
+        return None
+
+
+def catalog_bbox(row: dict):
+    sw = point_coords(row.get("sw_bound"))
+    ne = point_coords(row.get("ne_bound"))
+    if sw is None or ne is None:
+        return None
+    minx, miny = sw
+    maxx, maxy = ne
+    if minx >= maxx or miny >= maxy:
+        return None
+    return minx, miny, maxx, maxy
+
+
+def bbox_intersects(a, b) -> bool:
+    aminx, aminy, amaxx, amaxy = a
+    bminx, bminy, bmaxx, bmaxy = b
+    return not (
+        amaxx < bminx or
+        bmaxx < aminx or
+        amaxy < bminy or
+        bmaxy < aminy
+    )
+
+
 def result_entry(row: dict, category: str, status: str, **extra) -> dict:
     return {
         "id": str(row.get("id") or ""),
@@ -168,6 +203,33 @@ def main() -> int:
         print()
         print(f"[{index}/{len(rows)}] {name}")
         print(f"  category={category}")
+
+        # For AOI-bound 2D services, avoid querying layers whose published
+        # catalog extent clearly does not intersect the requested BBOX.
+        # 3D/terrain metadata remain catalog-level downloads and are not
+        # excluded by this filter.
+        extent = catalog_bbox(row)
+        spatial_categories = {
+            "bhumi-persil-wms", "xyz", "ogc", "geoserver",
+            "wms", "arcgis", "bhumi-wrapper",
+        }
+        if (
+            extent is not None
+            and category in spatial_categories
+            and not bbox_intersects(args.bbox, extent)
+        ):
+            manifest["layers"][layer_id] = result_entry(
+                row,
+                category,
+                "skipped-outside-aoi",
+                catalog_bbox=list(extent),
+                requested_bbox=list(args.bbox),
+                reason="Published layer extent does not intersect requested AOI.",
+            )
+            print(f"  SKIP outside AOI: extent={extent}")
+            skipped += 1
+            save_manifest(manifest_path, manifest)
+            continue
 
         if args.dry_run:
             manifest["layers"][layer_id] = result_entry(
