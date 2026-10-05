@@ -1504,6 +1504,16 @@ def persil_image_to_geotiff(
         with mem.open() as src:
             data = src.read()
             profile = src.profile.copy()
+
+            # PNG readers may expose strip/block metadata that is invalid
+            # for tiled GeoTIFF output. Remove inherited block settings and
+            # set explicit TIFF tile sizes that are multiples of 16.
+            profile.pop("blockxsize", None)
+            profile.pop("blockysize", None)
+
+            blockx = min(256, max(16, (src.width // 16) * 16))
+            blocky = min(256, max(16, (src.height // 16) * 16))
+
             profile.update(
                 driver="GTiff",
                 crs="EPSG:3857",
@@ -1512,6 +1522,8 @@ def persil_image_to_geotiff(
                 ),
                 compress="deflate",
                 tiled=True,
+                blockxsize=blockx,
+                blockysize=blocky,
             )
             output.parent.mkdir(parents=True, exist_ok=True)
             with rasterio.open(output, "w", **profile) as dst:
@@ -1524,6 +1536,12 @@ def persil_mosaic_tiles(tile_paths: list[Path], output: Path) -> None:
     try:
         mosaic, transform = merge(datasets)
         profile = datasets[0].profile.copy()
+        profile.pop("blockxsize", None)
+        profile.pop("blockysize", None)
+
+        blockx = min(256, max(16, (mosaic.shape[2] // 16) * 16))
+        blocky = min(256, max(16, (mosaic.shape[1] // 16) * 16))
+
         profile.update(
             driver="GTiff",
             height=mosaic.shape[1],
@@ -1531,6 +1549,8 @@ def persil_mosaic_tiles(tile_paths: list[Path], output: Path) -> None:
             transform=transform,
             compress="deflate",
             tiled=True,
+            blockxsize=blockx,
+            blockysize=blocky,
         )
         output.parent.mkdir(parents=True, exist_ok=True)
         with rasterio.open(output, "w", **profile) as dst:
