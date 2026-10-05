@@ -132,20 +132,25 @@ def main() -> int:
         )
         print(f"\nSaved metadata: {out}")
 
-    # Hint based on discovered service URL.
-    for _path, url in urls:
-        u = url.lower()
-        if "wmts" in u:
-            print("\n=== WMTS CANDIDATE ===")
-            print(url)
-            if "request=getcapabilities" not in u.lower():
-                sep = "&" if "?" in url else "?"
-                print(
-                    "Capabilities candidate: "
-                    + url
-                    + sep
-                    + "SERVICE=WMTS&REQUEST=GetCapabilities&VERSION=1.0.0"
-                )
+    # For WMTS items, use the item's base service URL for capabilities.
+    if isinstance(meta, dict) and str(meta.get("type") or "").upper() == "WMTS":
+        service_url = meta.get("url")
+        if isinstance(service_url, str) and service_url.startswith(("http://", "https://")):
+            sep = "&" if "?" in service_url else "?"
+            print("\n=== WMTS SERVICE ===")
+            print(service_url)
+            print(
+                "Capabilities candidate: "
+                + service_url
+                + sep
+                + "SERVICE=WMTS&VERSION=1.0.0&REQUEST=GetCapabilities"
+            )
+
+    # Preserve any GetTile template found in item data.
+    for path, url in urls:
+        if "request=gettile" in url.lower():
+            print("\n=== WMTS GETTILE TEMPLATE ===")
+            print(f"{path}: {url}")
 
     return 0
 
