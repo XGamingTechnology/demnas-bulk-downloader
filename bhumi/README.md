@@ -210,3 +210,35 @@ berdasarkan operasi: render peta (`GetMap`) diizinkan, sedangkan query feature
 
 Jangan mencoba melewati filtering tersebut dengan cookie/token yang bukan milik
 sendiri, path/encoding obfuscation, origin spoofing, atau teknik bypass lainnya.
+
+
+### Matrix operasi OGC Persil terverifikasi
+
+Probe lanjutan terhadap `https://bhumi.atrbpn.go.id/mprx/service`
+dengan header client yang sama seperti downloader menghasilkan:
+
+| Operasi | Hasil |
+|---|---|
+| WMS 1.3.0 GetMap | HTTP 200, image/png |
+| WMS 1.1.1 GetMap | HTTP 200, image/png |
+| WMS GetLegendGraphic | HTTP 200, image/png |
+| WMS GetFeatureInfo | HTTP 403 |
+| WMS DescribeLayer | HTTP 403 |
+| WFS GetCapabilities 2.0.0 | HTTP 403 |
+| WFS GetCapabilities 1.1.0 | HTTP 403 |
+| WFS DescribeFeatureType | HTTP 403 |
+| WMS GetStyles | HTTP 200 tetapi body adalah ServiceException: unknown request type |
+
+Kesimpulan: endpoint `/mprx/service` dapat dipakai sebagai public render path,
+namun bukan public vector/feature-query path pada pengujian ini.
+
+Untuk akses feature yang sah, repo menyediakan:
+
+```bash
+python3 bhumi/query_persil.py --dry-run \
+  --bbox 104.08144856688278,-3.508670771548452,104.43584512679433,-3.3288696787825245
+```
+
+Jika pengguna memiliki token BHUMI yang memang mereka berhak gunakan, token hanya
+diset di shell lokal melalui `BHUMI_TOKEN`. Token tidak boleh dipaste ke chat,
+disimpan di repo, atau dimasukkan ke file konfigurasi yang ter-commit.
