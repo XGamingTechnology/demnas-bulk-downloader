@@ -33,6 +33,7 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import math
 import mimetypes
@@ -248,6 +249,22 @@ def arcgis_json(
     return data if isinstance(data, dict) else None, r
 
 
+def is_arcgis_service_metadata(data: dict | None) -> bool:
+    if not isinstance(data, dict) or not data or data.get("error"):
+        return False
+    # ArcGIS REST MapServer service metadata normally exposes currentVersion
+    # plus one or more service-level fields. Do not accept arbitrary JSON as
+    # a valid MapServer response.
+    if "currentVersion" not in data:
+        return False
+    service_keys = {
+        "layers", "tables", "mapName", "serviceDescription",
+        "description", "fullExtent", "initialExtent",
+        "supportedQueryFormats", "capabilities",
+    }
+    return any(key in data for key in service_keys)
+
+
 def choose_arcgis_route(
     session: requests.Session,
     row: dict,
@@ -263,8 +280,15 @@ def choose_arcgis_route(
             errors.append(f"{label}: {type(exc).__name__}: {exc}")
             continue
 
-        if data is not None:
+        if is_arcgis_service_metadata(data):
             return proxy_prefix, root, label, data
+
+        if data is not None:
+            errors.append(
+                f"{label}: JSON diterima tetapi bukan metadata ArcGIS MapServer "
+                f"(keys={','.join(sorted(data.keys())[:20])})"
+            )
+            continue
 
         errors.append(
             f"{label}: HTTP {r.status_code} "
@@ -421,6 +445,65 @@ def xml_layer_names(content: bytes) -> list[str]:
     return names
 
 
+def wfs_feature_type_names(content: bytes) -> list[str]:
+    """Return only WFS FeatureType/Name values from GetCapabilities."""
+    try:
+        root = ET.fromstring(content)
+    except ET.ParseError:
+        return []
+
+    names: list[str] = []
+    for elem in root.iter():
+        if elem.tag.split("}", 1)[-1] != "FeatureType":
+            continue
+        for child in elem:
+            if child.tag.split("}", 1)[-1] == "Name" and child.text:
+                value = child.text.strip()
+                if value and value not in names:
+                    names.append(value)
+                break
+    return names
+
+
+def resolve_wfs_typename(catalog_name: str, capabilities: bytes) -> str:
+    advertised = wfs_feature_type_names(capabilities)
+    if not advertised:
+        return catalog_name
+
+    if catalog_name in advertised:
+        return catalog_name
+
+    catalog_local = catalog_name.split(":", 1)[-1].lower()
+
+    # First try exact local-name matching regardless of namespace prefix.
+    exact_local = [
+        name for name in advertised
+        if name.split(":", 1)[-1].lower() == catalog_local
+    ]
+    if len(exact_local) == 1:
+        return exact_local[0]
+
+    # Then use a conservative fuzzy match. This handles catalog drift such as
+    # PTPRPublish vs the actually advertised PTPRPublished.
+    local_map = {
+        name.split(":", 1)[-1].lower(): name
+        for name in advertised
+    }
+    matches = difflib.get_close_matches(
+        catalog_local,
+        list(local_map.keys()),
+        n=2,
+        cutoff=0.88,
+    )
+    if len(matches) == 1:
+        return local_map[matches[0]]
+
+    raise RuntimeError(
+        "Layer katalog tidak ditemukan persis di WFS GetCapabilities. "
+        f"catalog={catalog_name}; kandidat dekat={matches or '(tidak ada)'}"
+    )
+
+
 def ogc_candidate_urls(base_url: str, service: str) -> list[str]:
     """Build standard GeoServer endpoint candidates from a catalog URL."""
     base = base_url.rstrip("/")
@@ -513,8 +596,13 @@ def ogc_probe(
                 f"{r.headers.get('content-type', '')} OK"
             )
             print(f"  endpoint: {endpoint}")
-            names = xml_layer_names(body)
-            print(f"  advertised names: {len(names)}")
+            names = (
+                wfs_feature_type_names(body)
+                if service == "WFS"
+                else xml_layer_names(body)
+            )
+            label = "feature types" if service == "WFS" else "advertised names"
+            print(f"  {label}: {len(names)}")
             for name in names[:50]:
                 print(f"    {name}")
             if output_dir:
@@ -543,39 +631,106 @@ def wfs_download(
     output: Path,
     timeout: int,
 ) -> None:
-    url, _caps, _resp = find_ogc_endpoint(
+    url, caps, _resp = find_ogc_endpoint(
         session, row, "WFS", timeout
     )
-    if not url:
+    if not url or caps is None:
         raise RuntimeError(
             "Tidak menemukan endpoint WFS GetCapabilities yang valid."
         )
+
+    catalog_typename = str(row.get("map_service_layer_name") or "")
+    typename = resolve_wfs_typename(catalog_typename, caps)
+
     print(f"WFS endpoint: {url}")
-    typename = str(row.get("map_service_layer_name") or "")
-    params = {
-        "service": "WFS",
-        "version": "2.0.0",
-        "request": "GetFeature",
-        "typeNames": typename,
-        "outputFormat": "application/json",
-        "srsName": "EPSG:4326",
-    }
+    if typename != catalog_typename:
+        print(
+            f"WFS typename dikoreksi dari {catalog_typename} -> {typename} "
+            "berdasarkan GetCapabilities"
+        )
+    else:
+        print(f"WFS typename: {typename}")
+
+    bbox_value = None
     if bbox:
         minx, miny, maxx, maxy = bbox
-        params["bbox"] = f"{minx},{miny},{maxx},{maxy},EPSG:4326"
+        bbox_value = f"{minx},{miny},{maxx},{maxy},EPSG:4326"
 
-    r = session.get(url, params=params, timeout=timeout)
-    r.raise_for_status()
-    try:
-        data = r.json()
-    except ValueError as exc:
-        raise RuntimeError(
-            f"WFS tidak mengembalikan JSON. Content-Type={r.headers.get('content-type')}"
-        ) from exc
-    save_json(output, data)
-    print(f"WFS GeoJSON saved: {output}")
-    if isinstance(data, dict) and isinstance(data.get("features"), list):
-        print(f"Features: {len(data['features'])}")
+    attempts = [
+        ("2.0.0", "typeNames", "application/json"),
+        ("2.0.0", "typeNames", "json"),
+        ("1.1.0", "typeName", "application/json"),
+        ("1.1.0", "typeName", "json"),
+        ("1.0.0", "typeName", "application/json"),
+        ("1.0.0", "typeName", "json"),
+    ]
+
+    errors: list[str] = []
+
+    for version, type_param, output_format in attempts:
+        params = {
+            "service": "WFS",
+            "version": version,
+            "request": "GetFeature",
+            type_param: typename,
+            "outputFormat": output_format,
+            "srsName": "EPSG:4326",
+        }
+        if bbox_value:
+            params["bbox"] = bbox_value
+
+        try:
+            r = session.get(
+                url,
+                params=params,
+                timeout=timeout,
+                allow_redirects=True,
+            )
+        except requests.RequestException as exc:
+            errors.append(
+                f"WFS {version} {output_format}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            continue
+
+        if r.status_code >= 400:
+            detail = r.text[:1200].replace("\n", " ")
+            errors.append(
+                f"WFS {version} {output_format}: HTTP {r.status_code} "
+                f"{detail}"
+            )
+            continue
+
+        try:
+            data = r.json()
+        except ValueError:
+            detail = r.text[:1200].replace("\n", " ")
+            errors.append(
+                f"WFS {version} {output_format}: bukan JSON "
+                f"Content-Type={r.headers.get('content-type', '')} {detail}"
+            )
+            continue
+
+        if isinstance(data, dict) and data.get("type") == "FeatureCollection":
+            save_json(output, data)
+            features = data.get("features", [])
+            print(
+                f"WFS GeoJSON saved: {output} "
+                f"({len(features) if isinstance(features, list) else '?'} features)"
+            )
+            print(
+                f"WFS mode berhasil: version={version}, "
+                f"outputFormat={output_format}"
+            )
+            return
+
+        errors.append(
+            f"WFS {version} {output_format}: JSON bukan FeatureCollection"
+        )
+
+    raise RuntimeError(
+        "Semua varian GetFeature WFS gagal:\n- " + "\n- ".join(errors)
+    )
 
 
 def wms_download(
