@@ -991,6 +991,93 @@ def ogc_probe(
             )
 
 
+def wfs_diagnose(
+    session: requests.Session,
+    row: dict,
+    bbox: tuple[float, float, float, float] | None,
+    timeout: int,
+    forced_typename: str | None = None,
+) -> None:
+    url, caps, _resp = find_ogc_endpoint(
+        session, row, "WFS", timeout
+    )
+    if not url or caps is None:
+        raise RuntimeError(
+            "Tidak menemukan endpoint WFS GetCapabilities yang valid."
+        )
+
+    catalog_typename = str(row.get("map_service_layer_name") or "")
+    typename = resolve_wfs_typename(
+        catalog_typename,
+        caps,
+        forced=forced_typename,
+    )
+
+    print(f"WFS endpoint: {url}")
+    print(f"WFS diagnose typename: {typename}")
+
+    tests = [
+        ("NO_BBOX", None),
+        ("WITH_BBOX", bbox),
+    ]
+
+    for label, test_bbox in tests:
+        if label == "WITH_BBOX" and test_bbox is None:
+            continue
+
+        params = {
+            "service": "WFS",
+            "version": "2.0.0",
+            "request": "GetFeature",
+            "typeNames": typename,
+            "count": "1",
+            "outputFormat": "application/json",
+            "srsName": "EPSG:4326",
+        }
+        params.update(wfs_bbox_params(url, test_bbox))
+
+        try:
+            r = session.get(
+                url,
+                params=params,
+                timeout=timeout,
+                allow_redirects=True,
+            )
+        except requests.RequestException as exc:
+            print(f"{label}: REQUEST_ERROR {exc}")
+            continue
+
+        print(
+            f"{label}: HTTP {r.status_code} "
+            f"Content-Type={r.headers.get('content-type', '')} "
+            f"Bytes={len(r.content)}"
+        )
+
+        if r.status_code >= 400:
+            print(f"  ERROR: {r.text[:1500].replace(chr(10), ' ')}")
+            continue
+
+        try:
+            data = r.json()
+        except ValueError:
+            print(f"  NON_JSON: {r.text[:1000].replace(chr(10), ' ')}")
+            continue
+
+        if isinstance(data, dict) and data.get("type") == "FeatureCollection":
+            features = data.get("features")
+            count = len(features) if isinstance(features, list) else None
+            print(f"  FeatureCollection features={count}")
+            if isinstance(features, list) and features:
+                feature = features[0]
+                props = feature.get("properties", {}) if isinstance(feature, dict) else {}
+                geom = feature.get("geometry", {}) if isinstance(feature, dict) else {}
+                print(f"  sample properties keys={list(props.keys())[:30]}")
+                print(f"  sample geometry type={geom.get('type') if isinstance(geom, dict) else None}")
+            continue
+
+        print(f"  JSON keys={list(data.keys())[:30] if isinstance(data, dict) else type(data).__name__}")
+
+
 def wfs_download(
     session: requests.Session,
     row: dict,
@@ -1255,6 +1342,11 @@ def main() -> int:
     action = ap.add_mutually_exclusive_group()
     action.add_argument("--probe", action="store_true")
     action.add_argument("--download", action="store_true")
+    action.add_argument(
+        "--diagnose-wfs",
+        action="store_true",
+        help="Bandingkan sample WFS tanpa BBOX vs dengan BBOX.",
+    )
 
     ap.add_argument("--bbox", type=parse_bbox)
     ap.add_argument("--zoom", type=int)
@@ -1297,6 +1389,22 @@ def main() -> int:
         return 0
 
     try:
+        if args.diagnose_wfs:
+            if category not in {"wms", "ogc", "geoserver"}:
+                print(
+                    "ERROR: --diagnose-wfs hanya untuk layer WFS/OGC/WMS.",
+                    file=sys.stderr,
+                )
+                return 4
+            wfs_diagnose(
+                session,
+                row,
+                args.bbox,
+                args.timeout,
+                forced_typename=args.typename,
+            )
+            return 0
+
         if category == "bhumi-wrapper":
             print(
                 "\nLayer ini memakai BHUMI application wrapper. "
