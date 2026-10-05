@@ -35,6 +35,8 @@ curl_common=(
   -sS
   --connect-timeout 10
   --max-time 30
+  --user-agent "Mozilla/5.0 (compatible; demnas-bulk-downloader/1.0)"
+  --referer "https://bhumi.atrbpn.go.id/peta"
 )
 
 save_headers_safely() {
@@ -45,6 +47,7 @@ save_headers_safely() {
 }
 
 echo "=== BHUMI Persil safe HTTP/WMS diagnostic ==="
+echo "Client headers: proven User-Agent + Referer https://bhumi.atrbpn.go.id/peta"
 echo "service: $BASE"
 echo "center EPSG:3857: $CX,$CY"
 echo "output: $OUT"
@@ -56,11 +59,21 @@ for method in HEAD OPTIONS; do
   tmp="$OUT/policy_${method,,}.raw.headers"
   safe="$OUT/policy_${method,,}.headers"
 
-  curl "${curl_common[@]}" \
-    -X "$method" \
-    -D "$tmp" \
-    -o /dev/null \
-    "$BASE" || true
+  if [[ "$method" == "HEAD" ]]; then
+    curl "${curl_common[@]}" \
+      --head \
+      -H "Accept: */*" \
+      -D "$tmp" \
+      -o /dev/null \
+      "$BASE" || true
+  else
+    curl "${curl_common[@]}" \
+      -X "$method" \
+      -H "Accept: */*" \
+      -D "$tmp" \
+      -o /dev/null \
+      "$BASE" || true
+  fi
 
   if [[ -f "$tmp" ]]; then
     save_headers_safely "$tmp" "$safe"
@@ -81,6 +94,7 @@ request_getmap() {
 
   local code
   code=$(curl "${curl_common[@]}" \
+    -H "Accept: image/png,image/*,*/*;q=0.8" \
     -G "$BASE" \
     --data-urlencode "SERVICE=WMS" \
     --data-urlencode "VERSION=$version" \
@@ -127,6 +141,7 @@ request_gfi() {
 
   local code
   code=$(curl "${curl_common[@]}" \
+    -H "Accept: $fmt,*/*;q=0.8" \
     -G "$BASE" \
     --data-urlencode "SERVICE=WMS" \
     --data-urlencode "VERSION=$version" \
