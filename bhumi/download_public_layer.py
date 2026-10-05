@@ -1429,18 +1429,14 @@ def persil_wms_probe(
             print(f"GetFeatureInfo JSON keys={list(data.keys())[:30]}")
 
 
-def persil_wms_download(
+def persil_wms_getmap(
     session: requests.Session,
-    bbox: tuple[float, float, float, float],
-    output: Path,
+    bbox_3857: tuple[float, float, float, float],
     timeout: int,
     width: int,
     height: int,
-) -> None:
-    minlon, minlat, maxlon, maxlat = bbox
-    minx, miny = lonlat_to_web_mercator(minlon, minlat)
-    maxx, maxy = lonlat_to_web_mercator(maxlon, maxlat)
-
+) -> bytes:
+    minx, miny, maxx, maxy = bbox_3857
     params = {
         "SERVICE": "WMS",
         "VERSION": "1.3.0",
@@ -1464,11 +1460,6 @@ def persil_wms_download(
 
     ctype = r.headers.get("content-type", "").lower()
     prefix = r.content[:32]
-    print(
-        f"Persil WMS GetMap: HTTP {r.status_code} "
-        f"{ctype} bytes={len(r.content)}"
-    )
-
     if r.status_code >= 400:
         raise RuntimeError(
             f"Persil WMS GetMap gagal HTTP {r.status_code}: "
@@ -1484,13 +1475,189 @@ def persil_wms_download(
             f"Content-Type={ctype}; preview={r.text[:800]!r}"
         )
 
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_bytes(r.content)
-    print(f"Persil WMS image saved: {output} ({len(r.content)} bytes)")
-    print(
-        "Catatan: WMS adalah raster render. File ini bukan polygon/vector "
-        "bidang tanah dan tidak memuat atribut NIB."
-    )
+    return r.content
+
+
+def require_rasterio():
+    try:
+        import rasterio
+        from rasterio.io import MemoryFile
+        from rasterio.merge import merge
+        from rasterio.transform import from_bounds
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "GeoTIFF mosaic membutuhkan rasterio. "
+            "Install dependency dari requirements.txt terlebih dahulu."
+        ) from exc
+    return rasterio, MemoryFile, merge, from_bounds
+
+
+def persil_image_to_geotiff(
+    image_bytes: bytes,
+    bbox_3857: tuple[float, float, float, float],
+    output: Path,
+) -> None:
+    rasterio, MemoryFile, _merge, from_bounds = require_rasterio()
+    minx, miny, maxx, maxy = bbox_3857
+
+    with MemoryFile(image_bytes) as mem:
+        with mem.open() as src:
+            data = src.read()
+            profile = src.profile.copy()
+            profile.update(
+                driver="GTiff",
+                crs="EPSG:3857",
+                transform=from_bounds(
+                    minx, miny, maxx, maxy, src.width, src.height
+                ),
+                compress="deflate",
+                tiled=True,
+            )
+            output.parent.mkdir(parents=True, exist_ok=True)
+            with rasterio.open(output, "w", **profile) as dst:
+                dst.write(data)
+
+
+def persil_mosaic_tiles(tile_paths: list[Path], output: Path) -> None:
+    rasterio, _MemoryFile, merge, _from_bounds = require_rasterio()
+    datasets = [rasterio.open(path) for path in tile_paths]
+    try:
+        mosaic, transform = merge(datasets)
+        profile = datasets[0].profile.copy()
+        profile.update(
+            driver="GTiff",
+            height=mosaic.shape[1],
+            width=mosaic.shape[2],
+            transform=transform,
+            compress="deflate",
+            tiled=True,
+        )
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with rasterio.open(output, "w", **profile) as dst:
+            dst.write(mosaic)
+    finally:
+        for ds in datasets:
+            ds.close()
+
+
+def persil_wms_download(
+    session: requests.Session,
+    bbox: tuple[float, float, float, float],
+    output: Path,
+    timeout: int,
+    width: int,
+    height: int,
+    cols: int = 1,
+    rows: int = 1,
+    delay: float = 0.0,
+    max_tiles: int = 500,
+    workdir: Path | None = None,
+    keep_tiles: bool = False,
+) -> None:
+    if cols < 1 or rows < 1:
+        raise RuntimeError("--cols dan --rows minimal 1.")
+
+    total = cols * rows
+    if total > max_tiles:
+        raise RuntimeError(
+            f"Persil WMS membutuhkan {total} tile, melewati "
+            f"--max-tiles={max_tiles}."
+        )
+
+    minlon, minlat, maxlon, maxlat = bbox
+    minx, miny = lonlat_to_web_mercator(minlon, minlat)
+    maxx, maxy = lonlat_to_web_mercator(maxlon, maxlat)
+
+    # Backward-compatible single raw PNG/JPEG output.
+    if total == 1 and output.suffix.lower() not in {".tif", ".tiff"}:
+        image_bytes = persil_wms_getmap(
+            session,
+            (minx, miny, maxx, maxy),
+            timeout,
+            width,
+            height,
+        )
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(image_bytes)
+        print(
+            f"Persil WMS image saved: {output} "
+            f"({len(image_bytes)} bytes)"
+        )
+        print(
+            "Catatan: WMS adalah raster render. File ini bukan polygon/vector "
+            "bidang tanah dan tidak memuat atribut NIB."
+        )
+        return
+
+    require_rasterio()
+
+    dx = (maxx - minx) / cols
+    dy = (maxy - miny) / rows
+    tile_dir = workdir or Path(".bhumi_persil_tiles")
+    tile_dir.mkdir(parents=True, exist_ok=True)
+    tile_paths: list[Path] = []
+
+    try:
+        index = 0
+        for row_i in range(rows):
+            y0 = miny + row_i * dy
+            y1 = miny + (row_i + 1) * dy
+            for col_i in range(cols):
+                x0 = minx + col_i * dx
+                x1 = minx + (col_i + 1) * dx
+                index += 1
+                tile_bbox = (x0, y0, x1, y1)
+
+                print(
+                    f"[{index}/{total}] Persil WMS tile "
+                    f"r={row_i} c={col_i}"
+                )
+                image_bytes = persil_wms_getmap(
+                    session,
+                    tile_bbox,
+                    timeout,
+                    width,
+                    height,
+                )
+                tile_path = tile_dir / (
+                    f"tile_r{row_i:03d}_c{col_i:03d}.tif"
+                )
+                persil_image_to_geotiff(
+                    image_bytes,
+                    tile_bbox,
+                    tile_path,
+                )
+                tile_paths.append(tile_path)
+
+                if delay > 0:
+                    time.sleep(delay)
+
+        if len(tile_paths) == 1:
+            output.parent.mkdir(parents=True, exist_ok=True)
+            tile_paths[0].replace(output)
+            tile_paths = []
+        else:
+            persil_mosaic_tiles(tile_paths, output)
+
+        print(f"Persil WMS GeoTIFF saved: {output}")
+        print(
+            f"CRS: EPSG:3857 | grid={cols}x{rows} | "
+            f"pixel-per-tile={width}x{height}"
+        )
+        print(
+            "Catatan: hasil tetap raster render, bukan vector parcel/NIB."
+        )
+    finally:
+        if not keep_tiles:
+            for path in tile_paths:
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+            try:
+                tile_dir.rmdir()
+            except OSError:
+                pass
 
 
 def persil_wmts_params(
@@ -1860,6 +2027,28 @@ def main() -> int:
     ap.add_argument("--width", type=int, default=1600)
     ap.add_argument("--height", type=int, default=1200)
     ap.add_argument(
+        "--cols",
+        type=int,
+        default=1,
+        help="Jumlah tile WMS arah X untuk mosaic raster.",
+    )
+    ap.add_argument(
+        "--rows",
+        type=int,
+        default=1,
+        help="Jumlah tile WMS arah Y untuk mosaic raster.",
+    )
+    ap.add_argument(
+        "--workdir",
+        default=".bhumi_persil_tiles",
+        help="Direktori tile sementara untuk mosaic Persil.",
+    )
+    ap.add_argument(
+        "--keep-tiles",
+        action="store_true",
+        help="Pertahankan tile GeoTIFF sementara setelah mosaic.",
+    )
+    ap.add_argument(
         "--vector",
         action="store_true",
         help="Untuk WMS/OGC, download via WFS sebagai GeoJSON bila tersedia.",
@@ -1923,6 +2112,12 @@ def main() -> int:
                     args.timeout,
                     args.width,
                     args.height,
+                    cols=args.cols,
+                    rows=args.rows,
+                    delay=args.delay,
+                    max_tiles=args.max_tiles,
+                    workdir=Path(args.workdir),
+                    keep_tiles=args.keep_tiles,
                 )
             else:
                 persil_wms_probe(
