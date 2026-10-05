@@ -626,6 +626,81 @@ def wfs_hit_count(
     return None
 
 
+def wfs_sample_has_feature(
+    session: requests.Session,
+    url: str,
+    typename: str,
+    bbox: tuple[float, float, float, float],
+    timeout: int,
+) -> bool | None:
+    """
+    Probe at most one feature inside BBOX.
+
+    Some GISTARU WFS wrappers advertise WFS correctly but do not return a
+    usable numberMatched/numberOfFeatures for resultType=hits. In that case,
+    request one GeoJSON feature instead.
+    """
+    minx, miny, maxx, maxy = bbox
+    bbox_value = f"{minx},{miny},{maxx},{maxy},EPSG:4326"
+
+    attempts = [
+        ("2.0.0", "typeNames", "count", "application/json"),
+        ("2.0.0", "typeNames", "count", "json"),
+        ("1.1.0", "typeName", "maxFeatures", "application/json"),
+        ("1.1.0", "typeName", "maxFeatures", "json"),
+        ("1.0.0", "typeName", "maxFeatures", "application/json"),
+        ("1.0.0", "typeName", "maxFeatures", "json"),
+    ]
+
+    saw_valid_empty = False
+
+    for version, type_param, limit_param, output_format in attempts:
+        params = {
+            "service": "WFS",
+            "version": version,
+            "request": "GetFeature",
+            type_param: typename,
+            limit_param: "1",
+            "outputFormat": output_format,
+            "srsName": "EPSG:4326",
+            "bbox": bbox_value,
+        }
+
+        try:
+            r = session.get(
+                url,
+                params=params,
+                timeout=timeout,
+                allow_redirects=True,
+            )
+        except requests.RequestException:
+            continue
+
+        if r.status_code >= 400:
+            continue
+
+        try:
+            data = r.json()
+        except ValueError:
+            continue
+
+        if not isinstance(data, dict) or data.get("type") != "FeatureCollection":
+            continue
+
+        features = data.get("features")
+        if not isinstance(features, list):
+            continue
+
+        if features:
+            return True
+
+        saw_valid_empty = True
+
+    if saw_valid_empty:
+        return False
+    return None
+
+
 def wfs_candidate_typenames(
     catalog_name: str,
     capabilities: bytes,
@@ -674,10 +749,11 @@ def auto_resolve_wfs_typename_by_bbox(
 
     print(
         f"WFS typename ambigu ({len(candidates)} kandidat); "
-        "menguji irisan BBOX dengan resultType=hits..."
+        "menguji irisan BBOX..."
     )
 
-    matched: list[tuple[str, int]] = []
+    hit_matches: list[tuple[str, int]] = []
+    sample_matches: list[str] = []
 
     for idx, candidate in enumerate(candidates, 1):
         count = wfs_hit_count(
@@ -687,38 +763,72 @@ def auto_resolve_wfs_typename_by_bbox(
             bbox,
             timeout,
         )
-        if count is None:
-            print(f"  [{idx}/{len(candidates)}] {candidate}: hits=?")
+
+        if count is not None:
+            print(f"  [{idx}/{len(candidates)}] {candidate}: hits={count}")
+            if count > 0:
+                hit_matches.append((candidate, count))
             continue
 
-        print(f"  [{idx}/{len(candidates)}] {candidate}: hits={count}")
-        if count > 0:
-            matched.append((candidate, count))
+        sample = wfs_sample_has_feature(
+            session,
+            url,
+            candidate,
+            bbox,
+            timeout,
+        )
 
-    if len(matched) == 1:
-        chosen, count = matched[0]
-        print(f"WFS typename otomatis: {chosen} (hits={count})")
-        return chosen
+        if sample is True:
+            print(
+                f"  [{idx}/{len(candidates)}] {candidate}: "
+                "hits=? sample=1"
+            )
+            sample_matches.append(candidate)
+        elif sample is False:
+            print(
+                f"  [{idx}/{len(candidates)}] {candidate}: "
+                "hits=? sample=0"
+            )
+        else:
+            print(
+                f"  [{idx}/{len(candidates)}] {candidate}: "
+                "hits=? sample=?"
+            )
 
-    if len(matched) > 1:
-        # A BBOX can touch province boundaries. Prefer the candidate with the
-        # largest hit count, but only when it is unambiguously larger.
-        matched.sort(key=lambda item: item[1], reverse=True)
-        if len(matched) == 1 or matched[0][1] > matched[1][1]:
-            chosen, count = matched[0]
+    if hit_matches:
+        hit_matches.sort(key=lambda item: item[1], reverse=True)
+        if len(hit_matches) == 1 or hit_matches[0][1] > hit_matches[1][1]:
+            chosen, count = hit_matches[0]
             print(
                 f"WFS typename otomatis: {chosen} "
-                f"(hits terbesar={count}; kandidat beririsan={len(matched)})"
+                f"(hits={count})"
             )
             return chosen
 
+    if len(sample_matches) == 1:
+        chosen = sample_matches[0]
+        print(f"WFS typename otomatis: {chosen} (sample feature ditemukan)")
+        return chosen
+
+    if len(sample_matches) > 1:
         print(
-            "BBOX beririsan dengan beberapa kandidat dengan hit count "
-            "yang tidak bisa dibedakan secara aman:"
+            "BBOX beririsan dengan beberapa FeatureType berdasarkan sample:"
         )
-        for name, count in matched[:20]:
-            print(f"  {name}: {count}")
+        for name in sample_matches:
+            print(f"  {name}")
+        print(
+            "Tidak memilih otomatis karena BBOX mungkin menyentuh lebih dari "
+            "satu wilayah. Gunakan --typename eksplisit."
+        )
         return None
+
+    if len(hit_matches) > 1:
+        print(
+            "BBOX beririsan dengan beberapa FeatureType berdasarkan hits "
+            "tanpa pemenang yang jelas:"
+        )
+        for name, count in hit_matches[:20]:
+            print(f"  {name}: {count}")
 
     return None
 
