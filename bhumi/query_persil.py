@@ -11,7 +11,7 @@ Security model:
   script stops with a clear message.
 
 Example:
-  export BHUMI_TOKEN='Bearer ...'
+  export BHUMI_TOKEN='<JWT_TOKEN_FROM_YOUR_AUTHORIZED_BHUMI_SESSION>'
   python3 bhumi/query_persil.py \
     --bbox 104.08144856688278,-3.508670771548452,104.43584512679433,-3.3288696787825245 \
     --output output/bhumi_persil.json
@@ -76,7 +76,7 @@ def main() -> int:
         print(
             "BHUMI_TOKEN belum tersedia. Gunakan token dari sesi BHUMI yang "
             "memang kamu berhak akses, lalu set hanya di shell lokal:\n"
-            "  export BHUMI_TOKEN='Bearer ...'\n"
+            "  export BHUMI_TOKEN='<JWT_TOKEN_FROM_YOUR_AUTHORIZED_BHUMI_SESSION>'\n"
             "Token tidak boleh di-commit atau dikirim ke chat.",
             file=sys.stderr,
         )
