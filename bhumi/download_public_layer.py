@@ -1090,6 +1090,10 @@ def wfs_diagnose(
         print(f"  JSON keys={list(data.keys())[:30] if isinstance(data, dict) else type(data).__name__}")
 
 
+def is_gistaru_interop_wms(url: str) -> bool:
+    return "gistaru-app.atrbpn.go.id/interoppublic/api/wms/" in url
+
+
 def wfs_download(
     session: requests.Session,
     row: dict,
@@ -1199,8 +1203,19 @@ def wfs_download(
             continue
 
         if isinstance(data, dict) and data.get("type") == "FeatureCollection":
-            save_json(output, data)
             features = data.get("features", [])
+            if (
+                is_gistaru_interop_wms(url)
+                and isinstance(features, list)
+                and len(features) == 0
+            ):
+                print(
+                    "WARNING: GISTARU interop WFS menerima request tetapi "
+                    "mengembalikan 0 feature. Layer ini kemungkinan disajikan "
+                    "sebagai layer gabungan dinamis untuk render WMS, bukan "
+                    "sebagai vector GetFeature publik."
+                )
+            save_json(output, data)
             print(
                 f"WFS GeoJSON saved: {output} "
                 f"({len(features) if isinstance(features, list) else '?'} features)"
