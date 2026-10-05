@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 data/
 .DS_Store
+
+# Browser network captures may contain session secrets
+*.har
+bhumi_wms_capabilities.xml
