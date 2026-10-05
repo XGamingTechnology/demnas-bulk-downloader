@@ -2,14 +2,18 @@
 """
 Local BHUMI WMS reverse proxy and endpoint probe.
 
+The current upstream was confirmed from a BHUMI browser HAR captured on
+2026-10-05:
+    https://bhumi.atrbpn.go.id/expapi/bhumigs/umum/wms
+
 Purpose:
 - listen locally on http://127.0.0.1:8765/bhumi/wms
-- forward OGC WMS requests to a configurable upstream endpoint
-- probe known/publicly observed BHUMI GeoServer candidates without bypassing auth
+- forward OGC WMS requests to the BHUMI upstream
+- probe the current endpoint plus historical candidates
 
 Examples:
   python3 bhumi/proxy_wms.py --probe
-  python3 bhumi/proxy_wms.py --upstream https://example/geoserver/workspace/wms
+  python3 bhumi/proxy_wms.py
 """
 
 from __future__ import annotations
@@ -25,9 +29,12 @@ import requests
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
+DEFAULT_UPSTREAM = "https://bhumi.atrbpn.go.id/expapi/bhumigs/umum/wms"
+DEFAULT_REFERER = "https://bhumi.atrbpn.go.id/"
 
-# Historical/publicly observed candidates. They are probes only, not assumed current.
+# Current HAR-confirmed endpoint first; historical candidates remain probes only.
 CANDIDATES = [
+    DEFAULT_UPSTREAM,
     "https://bhumi.atrbpn.go.id/geoserver/umum/wms",
     "https://geosvc.atrbpn.go.id/geoserver/umum/wms",
     "https://bhumi.atrbpn.go.id/proxy/http://10.20.20.142:80/geoserver/umum/wms",
@@ -58,8 +65,9 @@ def probe(candidates: list[str], timeout: int = 20) -> list[tuple[str, str]]:
     session = requests.Session()
     session.headers.update(
         {
-            "User-Agent": "demnas-bulk-downloader/bhumi-probe",
+            "User-Agent": "Mozilla/5.0 (compatible; demnas-bulk-downloader/1.0)",
             "Accept": "application/xml,text/xml,*/*",
+            "Referer": DEFAULT_REFERER,
         }
     )
 
@@ -73,7 +81,7 @@ def probe(candidates: list[str], timeout: int = 20) -> list[tuple[str, str]]:
             status = (
                 f"OK HTTP {resp.status_code} {ctype}"
                 if ok
-                else f"NO HTTP {resp.status_code} {ctype}"
+                else f"NO HTTP {resp.status_code} {ctype} final={resp.url}"
             )
         except requests.RequestException as exc:
             status = f"ERROR {type(exc).__name__}: {exc}"
@@ -85,7 +93,7 @@ def probe(candidates: list[str], timeout: int = 20) -> list[tuple[str, str]]:
 
 class ProxyHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    upstream = ""
+    upstream = DEFAULT_UPSTREAM
     timeout = 90
 
     hop_by_hop = {
@@ -120,9 +128,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
         headers = {
             "User-Agent": self.headers.get(
-                "User-Agent", "demnas-bulk-downloader/bhumi-proxy"
+                "User-Agent", "Mozilla/5.0 (compatible; demnas-bulk-downloader/1.0)"
             ),
             "Accept": self.headers.get("Accept", "*/*"),
+            "Referer": self.headers.get("Referer", DEFAULT_REFERER),
         }
 
         try:
@@ -162,8 +171,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="BHUMI WMS local reverse proxy")
     parser.add_argument(
         "--upstream",
-        default=os.environ.get("BHUMI_UPSTREAM_WMS"),
-        help="Upstream BHUMI/GeoServer WMS URL",
+        default=os.environ.get("BHUMI_UPSTREAM_WMS", DEFAULT_UPSTREAM),
+        help="Upstream BHUMI WMS URL",
     )
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
@@ -171,7 +180,7 @@ def main() -> int:
     parser.add_argument(
         "--probe",
         action="store_true",
-        help="Probe known BHUMI WMS candidates and exit unless --upstream is also given",
+        help="Probe current and historical BHUMI WMS candidates",
     )
     parser.add_argument(
         "--candidate",
@@ -196,19 +205,11 @@ def main() -> int:
                 print(f"  {item}")
         else:
             print(
-                "\nBelum ada candidate publik yang terverifikasi sebagai WMS. "
-                "Ambil endpoint aktual dari Network/HAR BHUMI lalu jalankan "
-                "--candidate URL atau --upstream URL."
+                "\nBelum ada candidate yang terverifikasi sebagai WMS melalui "
+                "GetCapabilities. Endpoint HAR tetap dapat diuji dengan "
+                "GetLegendGraphic/GetMap karena request tersebut terkonfirmasi."
             )
-
-        if not args.upstream:
-            return 0
-
-    if not args.upstream:
-        parser.error(
-            "Proxy membutuhkan --upstream URL atau environment BHUMI_UPSTREAM_WMS. "
-            "Gunakan --probe untuk audit kandidat terlebih dahulu."
-        )
+        return 0
 
     ProxyHandler.upstream = args.upstream.rstrip("?&")
     ProxyHandler.timeout = args.timeout
