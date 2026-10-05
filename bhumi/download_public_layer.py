@@ -854,10 +854,22 @@ def auto_resolve_wfs_typename_by_bbox(
 
 
 def ogc_candidate_urls(base_url: str, service: str) -> list[str]:
-    """Build standard GeoServer endpoint candidates from a catalog URL."""
+    """Build OGC endpoint candidates from a catalog URL."""
     base = base_url.rstrip("/")
     service_l = service.lower()
-    candidates = [base]
+    candidates: list[str] = []
+
+    # GISTARU interoperability catalog records may point to a WMS route even
+    # when WFS is also advertised. Prefer a sibling /api/wfs/<id> endpoint
+    # for WFS when that URL pattern is present, then fall back to the catalog
+    # URL itself.
+    if (
+        service_l == "wfs"
+        and "gistaru-app.atrbpn.go.id/interoppublic/api/wms/" in base.lower()
+    ):
+        candidates.append(base.replace("/api/wms/", "/api/wfs/"))
+
+    candidates.append(base)
 
     # A catalog may point at a GeoServer workspace root:
     #   .../geoserver/<workspace>
