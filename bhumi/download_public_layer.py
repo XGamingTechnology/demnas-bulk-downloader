@@ -50,6 +50,7 @@ BASE = "https://bhumi.atrbpn.go.id"
 CATALOG_URL = f"{BASE}/panel/items/layers"
 DEFAULT_TIMEOUT = 60
 PERSIL_WMTS_SERVICE = "https://bhumi.atrbpn.go.id/mprx/service"
+PERSIL_WMS_SERVICE = PERSIL_WMTS_SERVICE
 PERSIL_WMTS_LAYER = "bhumi_persil"
 PERSIL_WMTS_MATRIXSET = "localgrid_high"
 PERSIL_ARCGIS_ITEM_ID = "11987ae333e5411ea95d5537a2b85296"
@@ -1300,6 +1301,134 @@ def lat2tile(lat: float, zoom: int) -> int:
     )
 
 
+def lonlat_to_web_mercator(lon: float, lat: float) -> tuple[float, float]:
+    radius = 6378137.0
+    lat = max(min(lat, 85.05112878), -85.05112878)
+    x = math.radians(lon) * radius
+    y = radius * math.log(
+        math.tan(math.pi / 4.0 + math.radians(lat) / 2.0)
+    )
+    return x, y
+
+
+def persil_wms_probe(
+    session: requests.Session,
+    bbox: tuple[float, float, float, float] | None,
+    timeout: int,
+) -> None:
+    print("\n=== PERSIL WMS PROBE ===")
+    print(f"service: {PERSIL_WMS_SERVICE}")
+    print(f"layer: {PERSIL_WMTS_LAYER}")
+
+    caps = session.get(
+        PERSIL_WMS_SERVICE,
+        params={
+            "SERVICE": "WMS",
+            "VERSION": "1.3.0",
+            "REQUEST": "GetCapabilities",
+        },
+        timeout=timeout,
+        allow_redirects=True,
+    )
+    print(
+        f"WMS GetCapabilities: HTTP {caps.status_code} "
+        f"{caps.headers.get('content-type', '')} bytes={len(caps.content)}"
+    )
+
+    if bbox is None:
+        print("Tambahkan --bbox untuk test GetMap/GetFeatureInfo.")
+        return
+
+    minlon, minlat, maxlon, maxlat = bbox
+    minx, miny = lonlat_to_web_mercator(minlon, minlat)
+    maxx, maxy = lonlat_to_web_mercator(maxlon, maxlat)
+
+    getmap = session.get(
+        PERSIL_WMS_SERVICE,
+        params={
+            "SERVICE": "WMS",
+            "VERSION": "1.3.0",
+            "REQUEST": "GetMap",
+            "LAYERS": PERSIL_WMTS_LAYER,
+            "STYLES": "",
+            "CRS": "EPSG:3857",
+            "BBOX": f"{minx},{miny},{maxx},{maxy}",
+            "WIDTH": "512",
+            "HEIGHT": "512",
+            "FORMAT": "image/png",
+            "TRANSPARENT": "true",
+        },
+        timeout=timeout,
+        allow_redirects=True,
+    )
+    gm_ctype = getmap.headers.get("content-type", "").lower()
+    print(
+        f"WMS GetMap: HTTP {getmap.status_code} "
+        f"{gm_ctype} bytes={len(getmap.content)}"
+    )
+    if getmap.status_code == 200 and getmap.content.startswith(b"\x89PNG"):
+        print("GetMap RESULT: PNG")
+    elif getmap.status_code >= 400:
+        print(f"GetMap preview: {getmap.text[:800]!r}")
+
+    clon = (minlon + maxlon) / 2.0
+    clat = (minlat + maxlat) / 2.0
+    cx, cy = lonlat_to_web_mercator(clon, clat)
+    half = 50.0
+
+    gfi = session.get(
+        PERSIL_WMS_SERVICE,
+        params={
+            "SERVICE": "WMS",
+            "VERSION": "1.3.0",
+            "REQUEST": "GetFeatureInfo",
+            "LAYERS": PERSIL_WMTS_LAYER,
+            "QUERY_LAYERS": PERSIL_WMTS_LAYER,
+            "STYLES": "",
+            "CRS": "EPSG:3857",
+            "BBOX": f"{cx-half},{cy-half},{cx+half},{cy+half}",
+            "WIDTH": "256",
+            "HEIGHT": "256",
+            "I": "128",
+            "J": "128",
+            "INFO_FORMAT": "application/json",
+            "FEATURE_COUNT": "10",
+        },
+        timeout=timeout,
+        allow_redirects=True,
+    )
+    gfi_ctype = gfi.headers.get("content-type", "").lower()
+    print(
+        f"WMS GetFeatureInfo: HTTP {gfi.status_code} "
+        f"{gfi_ctype} bytes={len(gfi.content)}"
+    )
+    if gfi.status_code >= 400:
+        print(f"GetFeatureInfo preview: {gfi.text[:1000]!r}")
+        return
+
+    try:
+        data = gfi.json()
+    except ValueError:
+        print(f"GetFeatureInfo NON_JSON: {gfi.text[:1000]!r}")
+        return
+
+    if isinstance(data, dict):
+        features = data.get("features")
+        if isinstance(features, list):
+            print(f"GetFeatureInfo features={len(features)}")
+            if features:
+                sample = features[0]
+                props = sample.get("properties", {}) if isinstance(sample, dict) else {}
+                geom = sample.get("geometry", {}) if isinstance(sample, dict) else {}
+                print(f"sample property keys={list(props.keys())[:30]}")
+                print(
+                    "sample geometry type="
+                    + str(geom.get("type") if isinstance(geom, dict) else None)
+                )
+        else:
+            print(f"GetFeatureInfo JSON keys={list(data.keys())[:30]}")
+
+
 def persil_wmts_params(
     level: int,
     row: int,
@@ -1734,6 +1863,12 @@ def main() -> int:
                     args.max_tiles,
                 )
             else:
+                persil_wms_probe(
+                    session,
+                    args.bbox,
+                    args.timeout,
+                )
+                print("\n=== PERSIL WMTS PROBE ===")
                 persil_wmts_probe(
                     session,
                     args.bbox,
