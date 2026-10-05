@@ -109,3 +109,43 @@ Analyzer mencari WMS/WFS/GeoServer/ArcGIS/vector-tile serta endpoint BHUMI seper
 **Jangan commit HAR mentah.** HAR sering memuat cookie, session token, header
 authorization, dan data privat. File HAR harus tetap lokal dan masuk
 `.gitignore`.
+
+
+## Bidang Tanah / Persil WMTS
+
+ArcGIS Online item publik berikut mengidentifikasi service WMTS untuk layer
+**Bidang Tanah - Bhumi AtrBpn**:
+
+- Item ID: `11987ae333e5411ea95d5537a2b85296`
+- Service: `https://bhumi.atrbpn.go.id/mprx/service`
+- Layer: `bhumi_persil`
+- TileMatrixSet: `localgrid_high`
+- Style: `default`
+- Format: `image/png`
+
+Metadata item dapat diperiksa dengan:
+
+```bash
+python3 bhumi/resolve_arcgis_item.py --save-dir output/arcgis_bhumi_item
+```
+
+Pada pengujian dari VPS, baik `GetCapabilities` maupun `GetTile` ke service
+`/mprx/service` mengembalikan **HTTP 403 dari nginx**. Artinya service diketahui
+dan dapat direferensikan oleh client GIS, tetapi akses anonim server-to-server
+dari host tersebut tidak diizinkan.
+
+Downloader **tidak mencoba memalsukan origin, cookie, token, atau mekanisme lain
+untuk melewati kontrol akses**. Untuk penggunaan visual, gunakan service tersebut
+melalui client yang memang diberi akses, misalnya ArcGIS Pro / ArcGIS Online /
+QGIS, atau gunakan akses resmi ATR/BPN.
+
+Probe:
+
+```bash
+python3 bhumi/download_public_layer.py \
+  --name "Bidang Tanah" \
+  --probe
+```
+
+Jika endpoint diblokir, output akan menampilkan
+`STATUS: SERVER_SIDE_BLOCKED` beserta konfigurasi client WMTS.
