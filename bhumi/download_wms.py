@@ -199,13 +199,20 @@ def get_map(
 ) -> bytes:
     minx, miny, maxx, maxy = bbox
 
+    # WMS 1.3.0 follows CRS axis order. EPSG:4326 is latitude,longitude,
+    # while WMS 1.1.1 uses the familiar longitude,latitude order.
+    if version == "1.3.0" and crs.upper() == "EPSG:4326":
+        bbox_value = f"{miny},{minx},{maxy},{maxx}"
+    else:
+        bbox_value = f"{minx},{miny},{maxx},{maxy}"
+
     params = {
         "SERVICE": "WMS",
         "VERSION": version,
         "REQUEST": "GetMap",
         "LAYERS": layer,
         "STYLES": styles,
-        "BBOX": f"{minx},{miny},{maxx},{maxy}",
+        "BBOX": bbox_value,
         "WIDTH": str(width),
         "HEIGHT": str(height),
         "FORMAT": image_format,
