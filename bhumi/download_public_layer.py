@@ -49,7 +49,9 @@ import requests
 BASE = "https://bhumi.atrbpn.go.id"
 CATALOG_URL = f"{BASE}/panel/items/layers"
 DEFAULT_TIMEOUT = 60
-PERSIL_WMTS_TEMPLATE = "https://bhumi.atrbpn.go.id/mapproxy/wmts/bhumi_persil/localgrid_high/{z}/{x}/{y}.png"
+PERSIL_WMTS_SERVICE = "https://bhumi.atrbpn.go.id/mprx/service"
+PERSIL_WMTS_LAYER = "bhumi_persil"
+PERSIL_WMTS_MATRIXSET = "localgrid_high"
 
 
 def fetch_catalog(session: requests.Session, timeout: int) -> list[dict]:
@@ -1297,15 +1299,123 @@ def lat2tile(lat: float, zoom: int) -> int:
     )
 
 
+def persil_wmts_params(
+    level: int,
+    row: int,
+    col: int,
+) -> dict[str, str | int]:
+    return {
+        "SERVICE": "WMTS",
+        "VERSION": "1.0.0",
+        "REQUEST": "GetTile",
+        "LAYER": PERSIL_WMTS_LAYER,
+        "STYLE": "default",
+        "FORMAT": "image/png",
+        "TILEMATRIXSET": PERSIL_WMTS_MATRIXSET,
+        "TILEMATRIX": level,
+        "TILEROW": row,
+        "TILECOL": col,
+    }
+
+
+def persil_wmts_capabilities(
+    session: requests.Session,
+    timeout: int,
+) -> requests.Response:
+    return session.get(
+        PERSIL_WMTS_SERVICE,
+        params={
+            "SERVICE": "WMTS",
+            "VERSION": "1.0.0",
+            "REQUEST": "GetCapabilities",
+        },
+        timeout=timeout,
+        allow_redirects=True,
+    )
+
+
+def print_persil_matrix_summary(content: bytes) -> None:
+    try:
+        root = ET.fromstring(content)
+    except ET.ParseError:
+        print("WMTS capabilities XML tidak bisa diparse.")
+        return
+
+    target = None
+    for elem in root.iter():
+        if elem.tag.split("}", 1)[-1] != "TileMatrixSet":
+            continue
+        identifier = None
+        for child in elem:
+            if child.tag.split("}", 1)[-1] == "Identifier" and child.text:
+                identifier = child.text.strip()
+                break
+        if identifier == PERSIL_WMTS_MATRIXSET:
+            target = elem
+            break
+
+    if target is None:
+        print(
+            f"TileMatrixSet {PERSIL_WMTS_MATRIXSET!r} tidak ditemukan "
+            "di capabilities."
+        )
+        return
+
+    supported_crs = None
+    matrices = []
+    for child in target:
+        tag = child.tag.split("}", 1)[-1]
+        if tag == "SupportedCRS" and child.text:
+            supported_crs = child.text.strip()
+        elif tag == "TileMatrix":
+            row = {}
+            for sub in child:
+                key = sub.tag.split("}", 1)[-1]
+                if sub.text:
+                    row[key] = sub.text.strip()
+            matrices.append(row)
+
+    print(f"supported CRS: {supported_crs}")
+    print(f"tile matrices: {len(matrices)}")
+    if matrices:
+        first = matrices[0]
+        last = matrices[-1]
+        print(
+            "first matrix: "
+            f"id={first.get('Identifier')} "
+            f"scale={first.get('ScaleDenominator')} "
+            f"topLeft={first.get('TopLeftCorner')} "
+            f"matrix={first.get('MatrixWidth')}x{first.get('MatrixHeight')} "
+            f"tile={first.get('TileWidth')}x{first.get('TileHeight')}"
+        )
+        print(
+            "last matrix: "
+            f"id={last.get('Identifier')} "
+            f"scale={last.get('ScaleDenominator')} "
+            f"matrix={last.get('MatrixWidth')}x{last.get('MatrixHeight')}"
+        )
+
+
 def persil_wmts_probe(
     session: requests.Session,
     bbox: tuple[float, float, float, float] | None,
     zoom: int | None,
     timeout: int,
 ) -> None:
-    print(f"Persil WMTS template: {PERSIL_WMTS_TEMPLATE}")
-    print("tile matrix: localgrid_high")
-    print("tile size: 256")
+    print(f"Persil WMTS service: {PERSIL_WMTS_SERVICE}")
+    print(f"layer: {PERSIL_WMTS_LAYER}")
+    print(f"tile matrix set: {PERSIL_WMTS_MATRIXSET}")
+
+    caps = persil_wmts_capabilities(session, timeout)
+    print(
+        f"GetCapabilities: HTTP {caps.status_code} "
+        f"{caps.headers.get('content-type', '')} "
+        f"bytes={len(caps.content)}"
+    )
+    if caps.status_code == 200:
+        print_persil_matrix_summary(caps.content)
+    else:
+        print(f"Capabilities preview: {caps.text[:1000]!r}")
 
     if bbox is None or zoom is None:
         print("Tambahkan --bbox dan --zoom untuk probe satu tile aktual.")
@@ -1314,24 +1424,27 @@ def persil_wmts_probe(
     minlon, minlat, maxlon, maxlat = bbox
     clon = (minlon + maxlon) / 2.0
     clat = (minlat + maxlat) / 2.0
-    x = lon2tile(clon, zoom)
-    y = lat2tile(clat, zoom)
-    url = (
-        PERSIL_WMTS_TEMPLATE
-        .replace("{z}", str(zoom))
-        .replace("{x}", str(x))
-        .replace("{y}", str(y))
+    col = lon2tile(clon, zoom)
+    row = lat2tile(clat, zoom)
+
+    r = session.get(
+        PERSIL_WMTS_SERVICE,
+        params=persil_wmts_params(zoom, row, col),
+        timeout=timeout,
+        allow_redirects=True,
     )
 
-    r = session.get(url, timeout=timeout, allow_redirects=True)
-    r.raise_for_status()
     ctype = r.headers.get("content-type", "").lower()
     prefix = r.content[:32]
 
-    print(f"probe z/x/y: {zoom}/{x}/{y}")
-    print(f"HTTP: {r.status_code}")
+    print(f"probe matrix/row/col: {zoom}/{row}/{col}")
+    print(f"GetTile HTTP: {r.status_code}")
     print(f"Content-Type: {ctype}")
     print(f"Bytes: {len(r.content)}")
+
+    if r.status_code >= 400:
+        print(f"GetTile preview: {r.text[:1200]!r}")
+        r.raise_for_status()
 
     if prefix.startswith(b"\x89PNG\r\n\x1a\n"):
         print("RESULT: PNG")
@@ -1341,7 +1454,7 @@ def persil_wmts_probe(
         return
 
     raise RuntimeError(
-        "Response tile bukan PNG/JPEG. "
+        "Response GetTile bukan PNG/JPEG. "
         f"Content-Type={ctype}; preview={r.text[:500]!r}"
     )
 
@@ -1356,12 +1469,12 @@ def persil_wmts_download(
     max_tiles: int,
 ) -> None:
     minlon, minlat, maxlon, maxlat = bbox
-    x0 = lon2tile(minlon, zoom)
-    x1 = lon2tile(maxlon, zoom)
-    y0 = lat2tile(maxlat, zoom)
-    y1 = lat2tile(minlat, zoom)
+    col0 = lon2tile(minlon, zoom)
+    col1 = lon2tile(maxlon, zoom)
+    row0 = lat2tile(maxlat, zoom)
+    row1 = lat2tile(minlat, zoom)
 
-    count = (x1 - x0 + 1) * (y1 - y0 + 1)
+    count = (col1 - col0 + 1) * (row1 - row0 + 1)
     if count > max_tiles:
         raise RuntimeError(
             f"Permintaan Persil mencakup {count} tile, melewati "
@@ -1370,22 +1483,26 @@ def persil_wmts_download(
         )
 
     print(
-        f"Persil WMTS z={zoom}: x={x0}..{x1}, "
-        f"y={y0}..{y1}, tiles={count}"
+        f"Persil WMTS matrix={zoom}: col={col0}..{col1}, "
+        f"row={row0}..{row1}, tiles={count}"
     )
-    print(f"template: {PERSIL_WMTS_TEMPLATE}")
+    print(f"service: {PERSIL_WMTS_SERVICE}")
 
     downloaded = 0
-    for x in range(x0, x1 + 1):
-        for y in range(y0, y1 + 1):
-            url = (
-                PERSIL_WMTS_TEMPLATE
-                .replace("{z}", str(zoom))
-                .replace("{x}", str(x))
-                .replace("{y}", str(y))
+    for col in range(col0, col1 + 1):
+        for row in range(row0, row1 + 1):
+            r = session.get(
+                PERSIL_WMTS_SERVICE,
+                params=persil_wmts_params(zoom, row, col),
+                timeout=timeout,
+                allow_redirects=True,
             )
-            r = session.get(url, timeout=timeout, allow_redirects=True)
-            r.raise_for_status()
+
+            if r.status_code >= 400:
+                raise RuntimeError(
+                    f"GetTile matrix/row/col={zoom}/{row}/{col}: "
+                    f"HTTP {r.status_code}; {r.text[:800]!r}"
+                )
 
             prefix = r.content[:32]
             if prefix.startswith(b"\x89PNG\r\n\x1a\n"):
@@ -1394,11 +1511,11 @@ def persil_wmts_download(
                 ext = ".jpg"
             else:
                 raise RuntimeError(
-                    f"Tile {zoom}/{x}/{y} bukan image valid; "
+                    f"Tile {zoom}/{row}/{col} bukan image valid; "
                     f"Content-Type={r.headers.get('content-type', '')}"
                 )
 
-            out = output_dir / str(zoom) / str(x) / f"{y}{ext}"
+            out = output_dir / str(zoom) / str(col) / f"{row}{ext}"
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_bytes(r.content)
             downloaded += 1
