@@ -224,29 +224,62 @@ def get_map(
     else:
         params["SRS"] = crs
 
-    response = request_with_retry(
-        session,
-        url,
-        params=params,
-        timeout=timeout,
-        retries=retries,
-        delay=delay,
-    )
+    def perform_request(current_layer: str) -> requests.Response:
+        params["LAYERS"] = current_layer
+        return request_with_retry(
+            session,
+            url,
+            params=params,
+            timeout=timeout,
+            retries=retries,
+            delay=delay,
+        )
 
-    ctype = response.headers.get("Content-Type", "").lower()
-    prefix = response.content[:2000].lstrip().lower()
+    response = perform_request(layer)
+
+    def response_error_text(resp: requests.Response) -> tuple[bool, str]:
+        ctype = resp.headers.get("Content-Type", "").lower()
+        prefix = resp.content[:2000].lstrip().lower()
+        is_error = (
+            "xml" in ctype
+            or "text" in ctype
+            or prefix.startswith(b"<?xml")
+            or b"<serviceexception" in prefix
+            or b"<ows:exception" in prefix
+            or b"<html" in prefix
+        )
+        text = resp.text[:4000] if is_error else ""
+        return is_error, text
+
+    is_error, error_text = response_error_text(response)
+
+    # BHUMI exposes a workspace-scoped endpoint (.../umum/wms). Some WMS
+    # operations accept "umum:Persil", while GetMap may expect only "Persil".
+    # Retry once with the unqualified layer name when GeoServer reports a
+    # layer/schema lookup failure.
     if (
-        "xml" in ctype
-        or "text" in ctype
-        or prefix.startswith(b"<?xml")
-        or b"<serviceexception" in prefix
-        or b"<ows:exception" in prefix
-        or b"<html" in prefix
+        is_error
+        and ":" in layer
+        and (
+            "layer does not exist" in error_text.lower()
+            or "can't obtain the schema" in error_text.lower()
+            or "cannot obtain the schema" in error_text.lower()
+        )
     ):
-        text = response.text[:4000]
+        fallback_layer = layer.split(":", 1)[1]
+        print(
+            f"GetMap gagal untuk {layer}; retry workspace-local layer "
+            f"{fallback_layer}..."
+        )
+        response = perform_request(fallback_layer)
+        is_error, error_text = response_error_text(response)
+
+    if is_error:
+        ctype = response.headers.get("Content-Type", "").lower()
         raise RuntimeError(
             "WMS mengembalikan response non-image/error "
-            f"(HTTP {response.status_code}, Content-Type={ctype or '(kosong)'}):\n{text}"
+            f"(HTTP {response.status_code}, Content-Type={ctype or '(kosong)'}):\n"
+            f"{error_text}"
         )
 
     return response.content
