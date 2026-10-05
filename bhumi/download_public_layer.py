@@ -560,6 +560,169 @@ def resolve_wfs_typename(
     )
 
 
+def parse_wfs_hits(content: bytes) -> int | None:
+    """Parse WFS resultType=hits count from WFS 1.x/2.x response."""
+    try:
+        root = ET.fromstring(content)
+    except ET.ParseError:
+        return None
+
+    for key in ("numberMatched", "numberOfFeatures"):
+        value = root.attrib.get(key)
+        if value is None:
+            continue
+        if str(value).lower() == "unknown":
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+def wfs_hit_count(
+    session: requests.Session,
+    url: str,
+    typename: str,
+    bbox: tuple[float, float, float, float],
+    timeout: int,
+) -> int | None:
+    minx, miny, maxx, maxy = bbox
+    bbox_value = f"{minx},{miny},{maxx},{maxy},EPSG:4326"
+
+    attempts = [
+        ("2.0.0", "typeNames"),
+        ("1.1.0", "typeName"),
+        ("1.0.0", "typeName"),
+    ]
+
+    for version, type_param in attempts:
+        params = {
+            "service": "WFS",
+            "version": version,
+            "request": "GetFeature",
+            type_param: typename,
+            "resultType": "hits",
+            "srsName": "EPSG:4326",
+            "bbox": bbox_value,
+        }
+        try:
+            r = session.get(
+                url,
+                params=params,
+                timeout=timeout,
+                allow_redirects=True,
+            )
+        except requests.RequestException:
+            continue
+
+        if r.status_code >= 400:
+            continue
+
+        count = parse_wfs_hits(r.content)
+        if count is not None:
+            return count
+
+    return None
+
+
+def wfs_candidate_typenames(
+    catalog_name: str,
+    capabilities: bytes,
+) -> list[str]:
+    advertised = wfs_feature_type_names(capabilities)
+    if not advertised:
+        return []
+
+    catalog_local = catalog_name.split(":", 1)[-1].lower()
+    parts = [p for p in catalog_local.split("_") if p]
+
+    stems = []
+    if len(parts) >= 2:
+        stems.append("_".join(parts[:2]))
+    if len(parts) >= 3:
+        stems.append("_".join(parts[:3]))
+
+    local_map = {
+        name.split(":", 1)[-1].lower(): name
+        for name in advertised
+    }
+
+    for stem in stems:
+        hits = sorted({
+            name
+            for local, name in local_map.items()
+            if local.startswith(stem)
+        })
+        if hits:
+            return hits
+
+    return []
+
+
+def auto_resolve_wfs_typename_by_bbox(
+    session: requests.Session,
+    url: str,
+    catalog_name: str,
+    capabilities: bytes,
+    bbox: tuple[float, float, float, float],
+    timeout: int,
+) -> str | None:
+    candidates = wfs_candidate_typenames(catalog_name, capabilities)
+    if len(candidates) <= 1:
+        return candidates[0] if candidates else None
+
+    print(
+        f"WFS typename ambigu ({len(candidates)} kandidat); "
+        "menguji irisan BBOX dengan resultType=hits..."
+    )
+
+    matched: list[tuple[str, int]] = []
+
+    for idx, candidate in enumerate(candidates, 1):
+        count = wfs_hit_count(
+            session,
+            url,
+            candidate,
+            bbox,
+            timeout,
+        )
+        if count is None:
+            print(f"  [{idx}/{len(candidates)}] {candidate}: hits=?")
+            continue
+
+        print(f"  [{idx}/{len(candidates)}] {candidate}: hits={count}")
+        if count > 0:
+            matched.append((candidate, count))
+
+    if len(matched) == 1:
+        chosen, count = matched[0]
+        print(f"WFS typename otomatis: {chosen} (hits={count})")
+        return chosen
+
+    if len(matched) > 1:
+        # A BBOX can touch province boundaries. Prefer the candidate with the
+        # largest hit count, but only when it is unambiguously larger.
+        matched.sort(key=lambda item: item[1], reverse=True)
+        if len(matched) == 1 or matched[0][1] > matched[1][1]:
+            chosen, count = matched[0]
+            print(
+                f"WFS typename otomatis: {chosen} "
+                f"(hits terbesar={count}; kandidat beririsan={len(matched)})"
+            )
+            return chosen
+
+        print(
+            "BBOX beririsan dengan beberapa kandidat dengan hit count "
+            "yang tidak bisa dibedakan secara aman:"
+        )
+        for name, count in matched[:20]:
+            print(f"  {name}: {count}")
+        return None
+
+    return None
+
+
 def ogc_candidate_urls(base_url: str, service: str) -> list[str]:
     """Build standard GeoServer endpoint candidates from a catalog URL."""
     base = base_url.rstrip("/")
@@ -715,13 +878,33 @@ def wfs_download(
         )
 
     catalog_typename = str(row.get("map_service_layer_name") or "")
-    typename = resolve_wfs_typename(
-        catalog_typename,
-        caps,
-        forced=forced_typename,
-    )
 
     print(f"WFS endpoint: {url}")
+
+    try:
+        typename = resolve_wfs_typename(
+            catalog_typename,
+            caps,
+            forced=forced_typename,
+        )
+    except RuntimeError:
+        if forced_typename or not bbox:
+            raise
+
+        typename = auto_resolve_wfs_typename_by_bbox(
+            session,
+            url,
+            catalog_typename,
+            caps,
+            bbox,
+            timeout,
+        )
+        if not typename:
+            raise RuntimeError(
+                "Tidak bisa memilih WFS FeatureType secara otomatis dari BBOX. "
+                "Gunakan --probe lalu pilih --typename eksplisit tanpa backslash."
+            )
+
     if typename != catalog_typename:
         print(
             f"WFS typename dikoreksi dari {catalog_typename} -> {typename} "
