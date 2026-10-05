@@ -189,6 +189,95 @@ def arcgis_parts(url: str) -> tuple[str | None, str]:
     return None, root
 
 
+def arcgis_candidates(row: dict) -> list[tuple[str | None, str, str]]:
+    """Return evidence-based ArcGIS access routes to try."""
+    raw = resolve_url(str(row.get("map_service_url") or ""))
+    candidates: list[tuple[str | None, str, str]] = []
+
+    proxy_prefix, root = arcgis_parts(raw)
+    candidates.append((proxy_prefix, root, "catalog"))
+
+    # Several GISTARU catalog records themselves use proxy_geokkp/run.ashx
+    # for ArcGIS REST. If a direct GISTARU MapServer returns HTML instead of
+    # REST JSON, try that same public proxy pattern.
+    parsed = urlsplit(root)
+    if (
+        proxy_prefix is None
+        and parsed.netloc.lower() == "gistaru.atrbpn.go.id"
+        and "/arcgis/rest/services/" in parsed.path
+    ):
+        candidates.append((
+            "https://gistaru.atrbpn.go.id/proxy_geokkp/run.ashx?",
+            root,
+            "gistaru-proxy",
+        ))
+
+    # Deduplicate while preserving order.
+    seen = set()
+    unique = []
+    for item in candidates:
+        key = (item[0], item[1])
+        if key not in seen:
+            seen.add(key)
+            unique.append(item)
+    return unique
+
+
+def arcgis_json(
+    session: requests.Session,
+    proxy_prefix: str | None,
+    root: str,
+    suffix: str,
+    params: dict,
+    timeout: int,
+) -> tuple[dict | None, requests.Response]:
+    url = arcgis_url(proxy_prefix, root, suffix, params)
+    r = session.get(url, timeout=timeout, allow_redirects=True)
+    r.raise_for_status()
+    ctype = r.headers.get("content-type", "").lower()
+    prefix = r.content[:500].lstrip().lower()
+
+    if "html" in ctype or prefix.startswith(b"<!doctype html") or b"<html" in prefix:
+        return None, r
+
+    try:
+        data = r.json()
+    except ValueError:
+        return None, r
+
+    return data if isinstance(data, dict) else None, r
+
+
+def choose_arcgis_route(
+    session: requests.Session,
+    row: dict,
+    timeout: int,
+) -> tuple[str | None, str, str, dict]:
+    errors = []
+    for proxy_prefix, root, label in arcgis_candidates(row):
+        try:
+            data, r = arcgis_json(
+                session, proxy_prefix, root, "", {"f": "pjson"}, timeout
+            )
+        except requests.RequestException as exc:
+            errors.append(f"{label}: {type(exc).__name__}: {exc}")
+            continue
+
+        if data is not None:
+            return proxy_prefix, root, label, data
+
+        errors.append(
+            f"{label}: HTTP {r.status_code} "
+            f"Content-Type={r.headers.get('content-type', '')} "
+            f"Final={r.url}"
+        )
+
+    raise RuntimeError(
+        "ArcGIS REST metadata tidak tersedia sebagai JSON. "
+        + " | ".join(errors)
+    )
+
+
 def arcgis_url(proxy_prefix: str | None, root: str, suffix: str, params: dict) -> str:
     target = root.rstrip("/") + "/" + suffix.lstrip("/")
     query = urlencode(params, doseq=True)
@@ -203,13 +292,12 @@ def arcgis_probe(
     timeout: int,
     output: Path | None,
 ) -> dict:
-    proxy_prefix, root = arcgis_parts(resolve_url(str(row.get("map_service_url") or "")))
-    url = arcgis_url(proxy_prefix, root, "", {"f": "pjson"})
-    r = session.get(url, timeout=timeout)
-    r.raise_for_status()
-    data = r.json()
+    proxy_prefix, root, route, data = choose_arcgis_route(
+        session, row, timeout
+    )
 
-    print(f"ArcGIS metadata: HTTP {r.status_code}")
+    print(f"ArcGIS route: {route}")
+    print(f"ArcGIS root: {root}")
     print(f"service: {data.get('mapName') or data.get('name') or '(unknown)'}")
     print(f"maxRecordCount: {data.get('maxRecordCount')}")
     layers = data.get("layers") or []
@@ -232,12 +320,24 @@ def arcgis_download_geojson(
     timeout: int,
     delay: float,
 ) -> None:
-    proxy_prefix, root = arcgis_parts(resolve_url(str(row.get("map_service_url") or "")))
+    proxy_prefix, root, route, _service_meta = choose_arcgis_route(
+        session, row, timeout
+    )
+    print(f"ArcGIS route: {route}")
 
-    meta_url = arcgis_url(proxy_prefix, root, str(sublayer_id), {"f": "pjson"})
-    meta_r = session.get(meta_url, timeout=timeout)
-    meta_r.raise_for_status()
-    meta = meta_r.json()
+    meta, meta_r = arcgis_json(
+        session,
+        proxy_prefix,
+        root,
+        str(sublayer_id),
+        {"f": "pjson"},
+        timeout,
+    )
+    if meta is None:
+        raise RuntimeError(
+            "ArcGIS sublayer metadata bukan JSON REST. "
+            f"Content-Type={meta_r.headers.get('content-type', '')}"
+        )
     page_size = int(meta.get("maxRecordCount") or 1000)
     page_size = max(1, min(page_size, 2000))
 
@@ -321,6 +421,31 @@ def xml_layer_names(content: bytes) -> list[str]:
     return names
 
 
+def ogc_candidate_urls(base_url: str, service: str) -> list[str]:
+    """Build standard GeoServer endpoint candidates from a catalog URL."""
+    base = base_url.rstrip("/")
+    service_l = service.lower()
+    candidates = [base]
+
+    # A catalog may point at a GeoServer workspace root:
+    #   .../geoserver/<workspace>
+    # while OGC operations live at .../<workspace>/wms or /wfs.
+    if "/geoserver/" in base.lower():
+        candidates.extend([
+            f"{base}/{service_l}",
+            f"{base}/ows",
+        ])
+
+    # Keep order and remove duplicates.
+    out = []
+    seen = set()
+    for value in candidates:
+        if value not in seen:
+            seen.add(value)
+            out.append(value)
+    return out
+
+
 def ogc_capabilities(
     session: requests.Session,
     url: str,
@@ -350,21 +475,44 @@ def ogc_capabilities(
     return ok, body, r
 
 
+def find_ogc_endpoint(
+    session: requests.Session,
+    row: dict,
+    service: str,
+    timeout: int,
+) -> tuple[str | None, bytes | None, requests.Response | None]:
+    base = resolve_url(str(row.get("map_service_url") or ""))
+    last_response = None
+    for candidate in ogc_candidate_urls(base, service):
+        try:
+            ok, body, r = ogc_capabilities(
+                session, candidate, service, timeout
+            )
+        except requests.RequestException:
+            continue
+        last_response = r
+        if ok:
+            return candidate, body, r
+    return None, None, last_response
+
+
 def ogc_probe(
     session: requests.Session,
     row: dict,
     timeout: int,
     output_dir: Path | None,
 ) -> None:
-    url = resolve_url(str(row.get("map_service_url") or ""))
+    base = resolve_url(str(row.get("map_service_url") or ""))
     for service in ("WMS", "WFS"):
-        ok, body, r = ogc_capabilities(session, url, service, timeout)
-        print(
-            f"{service}: HTTP {r.status_code} "
-            f"{r.headers.get('content-type', '')} "
-            f"{'OK' if ok else 'NO'}"
+        endpoint, body, r = find_ogc_endpoint(
+            session, row, service, timeout
         )
-        if ok:
+        if endpoint and body is not None and r is not None:
+            print(
+                f"{service}: HTTP {r.status_code} "
+                f"{r.headers.get('content-type', '')} OK"
+            )
+            print(f"  endpoint: {endpoint}")
             names = xml_layer_names(body)
             print(f"  advertised names: {len(names)}")
             for name in names[:50]:
@@ -374,6 +522,18 @@ def ogc_probe(
                 path = output_dir / f"{service.lower()}_capabilities.xml"
                 path.write_bytes(body)
                 print(f"  saved: {path}")
+        else:
+            if r is not None:
+                print(
+                    f"{service}: HTTP {r.status_code} "
+                    f"{r.headers.get('content-type', '')} NO"
+                )
+            else:
+                print(f"{service}: NO (no reachable candidate)")
+            print(
+                "  tried: "
+                + ", ".join(ogc_candidate_urls(base, service))
+            )
 
 
 def wfs_download(
@@ -383,7 +543,14 @@ def wfs_download(
     output: Path,
     timeout: int,
 ) -> None:
-    url = resolve_url(str(row.get("map_service_url") or ""))
+    url, _caps, _resp = find_ogc_endpoint(
+        session, row, "WFS", timeout
+    )
+    if not url:
+        raise RuntimeError(
+            "Tidak menemukan endpoint WFS GetCapabilities yang valid."
+        )
+    print(f"WFS endpoint: {url}")
     typename = str(row.get("map_service_layer_name") or "")
     params = {
         "service": "WFS",
@@ -420,7 +587,14 @@ def wms_download(
     width: int,
     height: int,
 ) -> None:
-    url = resolve_url(str(row.get("map_service_url") or ""))
+    url, _caps, _resp = find_ogc_endpoint(
+        session, row, "WMS", timeout
+    )
+    if not url:
+        raise RuntimeError(
+            "Tidak menemukan endpoint WMS GetCapabilities yang valid."
+        )
+    print(f"WMS endpoint: {url}")
     layer = str(row.get("map_service_layer_name") or "")
     minx, miny, maxx, maxy = bbox
     params = {
@@ -548,6 +722,11 @@ def main() -> int:
     ap.add_argument("--max-tiles", type=int, default=500)
     ap.add_argument("--width", type=int, default=1600)
     ap.add_argument("--height", type=int, default=1200)
+    ap.add_argument(
+        "--vector",
+        action="store_true",
+        help="Untuk WMS/OGC, download via WFS sebagai GeoJSON bila tersedia.",
+    )
     args = ap.parse_args()
 
     session = requests.Session()
@@ -608,14 +787,20 @@ def main() -> int:
 
         if category == "wms":
             if args.download:
-                if not args.bbox:
-                    print("ERROR: WMS download memerlukan --bbox.", file=sys.stderr)
-                    return 4
-                out = Path(args.output or "output/wms_layer.png")
-                wms_download(
-                    session, row, args.bbox, out,
-                    args.timeout, args.width, args.height,
-                )
+                if args.vector:
+                    out = Path(args.output or "output/wfs_layer.geojson")
+                    wfs_download(
+                        session, row, args.bbox, out, args.timeout
+                    )
+                else:
+                    if not args.bbox:
+                        print("ERROR: WMS download memerlukan --bbox.", file=sys.stderr)
+                        return 4
+                    out = Path(args.output or "output/wms_layer.png")
+                    wms_download(
+                        session, row, args.bbox, out,
+                        args.timeout, args.width, args.height,
+                    )
             else:
                 outdir = Path(args.output) if args.output else None
                 ogc_probe(session, row, args.timeout, outdir)
