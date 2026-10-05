@@ -284,10 +284,19 @@ def choose_arcgis_route(
             return proxy_prefix, root, label, data
 
         if data is not None:
-            errors.append(
-                f"{label}: JSON diterima tetapi bukan metadata ArcGIS MapServer "
-                f"(keys={','.join(sorted(data.keys())[:20])})"
-            )
+            if isinstance(data.get("error"), dict):
+                err = data["error"]
+                errors.append(
+                    f"{label}: ArcGIS error "
+                    f"code={err.get('code')} "
+                    f"message={err.get('message')} "
+                    f"details={err.get('details')}"
+                )
+            else:
+                errors.append(
+                    f"{label}: JSON diterima tetapi bukan metadata ArcGIS MapServer "
+                    f"(keys={','.join(sorted(data.keys())[:20])})"
+                )
             continue
 
         errors.append(
@@ -465,8 +474,20 @@ def wfs_feature_type_names(content: bytes) -> list[str]:
     return names
 
 
-def resolve_wfs_typename(catalog_name: str, capabilities: bytes) -> str:
+def resolve_wfs_typename(
+    catalog_name: str,
+    capabilities: bytes,
+    forced: str | None = None,
+) -> str:
     advertised = wfs_feature_type_names(capabilities)
+
+    if forced:
+        if advertised and forced not in advertised:
+            raise RuntimeError(
+                f"--typename {forced} tidak ada di WFS GetCapabilities."
+            )
+        return forced
+
     if not advertised:
         return catalog_name
 
@@ -475,7 +496,7 @@ def resolve_wfs_typename(catalog_name: str, capabilities: bytes) -> str:
 
     catalog_local = catalog_name.split(":", 1)[-1].lower()
 
-    # First try exact local-name matching regardless of namespace prefix.
+    # Exact local-name match regardless of namespace prefix.
     exact_local = [
         name for name in advertised
         if name.split(":", 1)[-1].lower() == catalog_local
@@ -483,8 +504,8 @@ def resolve_wfs_typename(catalog_name: str, capabilities: bytes) -> str:
     if len(exact_local) == 1:
         return exact_local[0]
 
-    # Then use a conservative fuzzy match. This handles catalog drift such as
-    # PTPRPublish vs the actually advertised PTPRPublished.
+    # Conservative fuzzy match: handles catalog drift such as
+    # PTPRPublish -> PTPRPublished.
     local_map = {
         name.split(":", 1)[-1].lower(): name
         for name in advertised
@@ -492,15 +513,50 @@ def resolve_wfs_typename(catalog_name: str, capabilities: bytes) -> str:
     matches = difflib.get_close_matches(
         catalog_local,
         list(local_map.keys()),
-        n=2,
-        cutoff=0.88,
+        n=5,
+        cutoff=0.82,
     )
     if len(matches) == 1:
         return local_map[matches[0]]
 
+    # Safe prefix/stem matching for catalog names with deployment suffixes,
+    # e.g. foo_1_indonesia vs a WFS type with a slightly different suffix.
+    parts = [p for p in catalog_local.split("_") if p]
+    stems = []
+    if len(parts) >= 2:
+        stems.append("_".join(parts[:2]))
+    if len(parts) >= 3:
+        stems.append("_".join(parts[:3]))
+
+    prefix_hits = []
+    for stem in stems:
+        hits = [
+            name for local, name in local_map.items()
+            if local.startswith(stem) or stem in local
+        ]
+        if hits:
+            prefix_hits = sorted(set(hits))
+            break
+
+    if len(prefix_hits) == 1:
+        return prefix_hits[0]
+
+    # Diagnostics: show the best nearby names without auto-selecting an
+    # ambiguous or unrelated feature type.
+    ranked_locals = difflib.get_close_matches(
+        catalog_local,
+        list(local_map.keys()),
+        n=10,
+        cutoff=0.25,
+    )
+    ranked = [local_map[x] for x in ranked_locals]
+    diagnostics = prefix_hits or ranked
+
     raise RuntimeError(
         "Layer katalog tidak ditemukan persis di WFS GetCapabilities. "
-        f"catalog={catalog_name}; kandidat dekat={matches or '(tidak ada)'}"
+        f"catalog={catalog_name}; "
+        f"kandidat={diagnostics or '(tidak ada)'}. "
+        "Gunakan --typename <nama_feature_type> bila ingin memilih eksplisit."
     )
 
 
@@ -603,6 +659,24 @@ def ogc_probe(
             )
             label = "feature types" if service == "WFS" else "advertised names"
             print(f"  {label}: {len(names)}")
+            if service == "WFS":
+                catalog_local = str(
+                    row.get("map_service_layer_name") or ""
+                ).split(":", 1)[-1].lower()
+                stem = "_".join(
+                    [p for p in catalog_local.split("_") if p][:2]
+                )
+                relevant = [
+                    name for name in names
+                    if (
+                        catalog_local in name.lower()
+                        or (stem and stem in name.lower())
+                    )
+                ]
+                if relevant:
+                    print("  relevant feature types:")
+                    for name in relevant[:50]:
+                        print(f"    {name}")
             for name in names[:50]:
                 print(f"    {name}")
             if output_dir:
@@ -630,6 +704,7 @@ def wfs_download(
     bbox: tuple[float, float, float, float] | None,
     output: Path,
     timeout: int,
+    forced_typename: str | None = None,
 ) -> None:
     url, caps, _resp = find_ogc_endpoint(
         session, row, "WFS", timeout
@@ -640,7 +715,11 @@ def wfs_download(
         )
 
     catalog_typename = str(row.get("map_service_layer_name") or "")
-    typename = resolve_wfs_typename(catalog_typename, caps)
+    typename = resolve_wfs_typename(
+        catalog_typename,
+        caps,
+        forced=forced_typename,
+    )
 
     print(f"WFS endpoint: {url}")
     if typename != catalog_typename:
@@ -882,6 +961,10 @@ def main() -> int:
         action="store_true",
         help="Untuk WMS/OGC, download via WFS sebagai GeoJSON bila tersedia.",
     )
+    ap.add_argument(
+        "--typename",
+        help="Override nama WFS FeatureType secara eksplisit.",
+    )
     args = ap.parse_args()
 
     session = requests.Session()
@@ -934,7 +1017,10 @@ def main() -> int:
         if category in {"ogc", "geoserver"}:
             if args.download:
                 out = Path(args.output or "output/ogc_layer.geojson")
-                wfs_download(session, row, args.bbox, out, args.timeout)
+                wfs_download(
+                    session, row, args.bbox, out, args.timeout,
+                    forced_typename=args.typename,
+                )
             else:
                 outdir = Path(args.output) if args.output else None
                 ogc_probe(session, row, args.timeout, outdir)
@@ -945,7 +1031,8 @@ def main() -> int:
                 if args.vector:
                     out = Path(args.output or "output/wfs_layer.geojson")
                     wfs_download(
-                        session, row, args.bbox, out, args.timeout
+                        session, row, args.bbox, out, args.timeout,
+                        forced_typename=args.typename,
                     )
                 else:
                     if not args.bbox:
