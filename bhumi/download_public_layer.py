@@ -52,6 +52,7 @@ DEFAULT_TIMEOUT = 60
 PERSIL_WMTS_SERVICE = "https://bhumi.atrbpn.go.id/mprx/service"
 PERSIL_WMTS_LAYER = "bhumi_persil"
 PERSIL_WMTS_MATRIXSET = "localgrid_high"
+PERSIL_ARCGIS_ITEM_ID = "11987ae333e5411ea95d5537a2b85296"
 
 
 def fetch_catalog(session: requests.Session, timeout: int) -> list[dict]:
@@ -1396,6 +1397,20 @@ def print_persil_matrix_summary(content: bytes) -> None:
         )
 
 
+def print_persil_client_config() -> None:
+    print("ArcGIS Online item:")
+    print(
+        "  https://www.arcgis.com/home/item.html?id="
+        + PERSIL_ARCGIS_ITEM_ID
+    )
+    print("WMTS client configuration:")
+    print(f"  service: {PERSIL_WMTS_SERVICE}")
+    print(f"  layer: {PERSIL_WMTS_LAYER}")
+    print(f"  tile matrix set: {PERSIL_WMTS_MATRIXSET}")
+    print("  style: default")
+    print("  format: image/png")
+
+
 def persil_wmts_probe(
     session: requests.Session,
     bbox: tuple[float, float, float, float] | None,
@@ -1412,6 +1427,21 @@ def persil_wmts_probe(
         f"{caps.headers.get('content-type', '')} "
         f"bytes={len(caps.content)}"
     )
+
+    if caps.status_code == 403:
+        print("STATUS: SERVER_SIDE_BLOCKED")
+        print(
+            "Endpoint WMTS diketahui dari ArcGIS Online item publik, "
+            "tetapi akses anonim dari host ini diblokir oleh nginx (HTTP 403)."
+        )
+        print(
+            "Tool tidak mencoba mengakali access control. "
+            "Gunakan konfigurasi WMTS ini dari client yang memang diizinkan "
+            "(mis. ArcGIS Pro/ArcGIS Online/QGIS) atau akses resmi ATR/BPN."
+        )
+        print_persil_client_config()
+        return
+
     if caps.status_code == 200:
         print_persil_matrix_summary(caps.content)
     else:
@@ -1442,6 +1472,11 @@ def persil_wmts_probe(
     print(f"Content-Type: {ctype}")
     print(f"Bytes: {len(r.content)}")
 
+    if r.status_code == 403:
+        print("STATUS: SERVER_SIDE_BLOCKED")
+        print_persil_client_config()
+        return
+
     if r.status_code >= 400:
         print(f"GetTile preview: {r.text[:1200]!r}")
         r.raise_for_status()
@@ -1468,6 +1503,18 @@ def persil_wmts_download(
     delay: float,
     max_tiles: int,
 ) -> None:
+    caps = persil_wmts_capabilities(session, timeout)
+    if caps.status_code == 403:
+        raise RuntimeError(
+            "BHUMI Persil WMTS diblokir HTTP 403 untuk akses anonim "
+            "server-side dari host ini. Bulk download dihentikan; tool tidak "
+            "mencoba bypass access control."
+        )
+    if caps.status_code >= 400:
+        raise RuntimeError(
+            f"BHUMI Persil WMTS GetCapabilities gagal HTTP {caps.status_code}."
+        )
+
     minlon, minlat, maxlon, maxlat = bbox
     col0 = lon2tile(minlon, zoom)
     col1 = lon2tile(maxlon, zoom)
