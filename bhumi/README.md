@@ -188,3 +188,25 @@ Untuk diagnosis tambahan `GetFeatureInfo` secara aman, gunakan
 `bhumi/test_persil_getfeatureinfo.sh`. Script hanya mencoba variasi WMS standar
 dan pemeriksaan HTTP biasa. Script tidak mencoba bypass autentikasi, cookie/token,
 path/encoding obfuscation, atau manipulasi access-control.
+
+
+### Kesimpulan filtering operasi Persil
+
+Dengan client header yang sama seperti downloader yang berhasil
+(`User-Agent` + `Referer: https://bhumi.atrbpn.go.id/peta`), pengujian
+menunjukkan:
+
+- `HEAD /mprx/service`: HTTP 200
+- `OPTIONS /mprx/service`: HTTP 200
+- WMS 1.3.0 `GetMap`: HTTP 200
+- WMS 1.1.1 `GetMap`: HTTP 200
+- WMS 1.3.0 `GetFeatureInfo`: HTTP 403 untuk JSON, GeoJSON, text/plain,
+  text/html, dan GML
+- WMS 1.1.1 `GetFeatureInfo`: HTTP 403 untuk JSON, text/plain, dan text/html
+
+Ini merupakan bukti kuat bahwa endpoint publik tersebut menerapkan filtering
+berdasarkan operasi: render peta (`GetMap`) diizinkan, sedangkan query feature
+(`GetFeatureInfo`) ditolak untuk akses anonim yang diuji.
+
+Jangan mencoba melewati filtering tersebut dengan cookie/token yang bukan milik
+sendiri, path/encoding obfuscation, origin spoofing, atau teknik bypass lainnya.
