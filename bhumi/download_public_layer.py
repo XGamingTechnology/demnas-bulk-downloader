@@ -107,7 +107,7 @@ def classify(row: dict) -> str:
     service_layer = str(row.get("map_service_layer_name") or "").strip().lower()
 
     if name == "bidang tanah" or service_layer == "umum:persil":
-        return "bhumi-persil-wmts"
+        return "bhumi-persil-wms"
 
     vendor = str(row.get("map_service_vendor") or "").strip().lower()
     url = str(row.get("map_service_url") or "").strip()
@@ -1429,6 +1429,70 @@ def persil_wms_probe(
             print(f"GetFeatureInfo JSON keys={list(data.keys())[:30]}")
 
 
+def persil_wms_download(
+    session: requests.Session,
+    bbox: tuple[float, float, float, float],
+    output: Path,
+    timeout: int,
+    width: int,
+    height: int,
+) -> None:
+    minlon, minlat, maxlon, maxlat = bbox
+    minx, miny = lonlat_to_web_mercator(minlon, minlat)
+    maxx, maxy = lonlat_to_web_mercator(maxlon, maxlat)
+
+    params = {
+        "SERVICE": "WMS",
+        "VERSION": "1.3.0",
+        "REQUEST": "GetMap",
+        "LAYERS": PERSIL_WMTS_LAYER,
+        "STYLES": "",
+        "CRS": "EPSG:3857",
+        "BBOX": f"{minx},{miny},{maxx},{maxy}",
+        "WIDTH": str(width),
+        "HEIGHT": str(height),
+        "FORMAT": "image/png",
+        "TRANSPARENT": "true",
+    }
+
+    r = session.get(
+        PERSIL_WMS_SERVICE,
+        params=params,
+        timeout=timeout,
+        allow_redirects=True,
+    )
+
+    ctype = r.headers.get("content-type", "").lower()
+    prefix = r.content[:32]
+    print(
+        f"Persil WMS GetMap: HTTP {r.status_code} "
+        f"{ctype} bytes={len(r.content)}"
+    )
+
+    if r.status_code >= 400:
+        raise RuntimeError(
+            f"Persil WMS GetMap gagal HTTP {r.status_code}: "
+            f"{r.text[:1200]!r}"
+        )
+
+    if not (
+        prefix.startswith(b"\x89PNG\r\n\x1a\n")
+        or prefix[:3] == b"\xff\xd8\xff"
+    ):
+        raise RuntimeError(
+            "Persil WMS GetMap tidak mengembalikan image valid. "
+            f"Content-Type={ctype}; preview={r.text[:800]!r}"
+        )
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_bytes(r.content)
+    print(f"Persil WMS image saved: {output} ({len(r.content)} bytes)")
+    print(
+        "Catatan: WMS adalah raster render. File ini bukan polygon/vector "
+        "bidang tanah dan tidak memuat atribut NIB."
+    )
+
+
 def persil_wmts_params(
     level: int,
     row: int,
@@ -1843,24 +1907,22 @@ def main() -> int:
             )
             return 0
 
-        if category == "bhumi-persil-wmts":
+        if category == "bhumi-persil-wms":
             if args.download:
-                if not args.bbox or args.zoom is None:
+                if not args.bbox:
                     print(
-                        "ERROR: Bidang Tanah WMTS download memerlukan "
-                        "--bbox dan --zoom.",
+                        "ERROR: Bidang Tanah WMS download memerlukan --bbox.",
                         file=sys.stderr,
                     )
                     return 4
-                outdir = Path(args.output or "output/bhumi_persil")
-                persil_wmts_download(
+                out = Path(args.output or "output/bhumi_persil.png")
+                persil_wms_download(
                     session,
                     args.bbox,
-                    args.zoom,
-                    outdir,
+                    out,
                     args.timeout,
-                    args.delay,
-                    args.max_tiles,
+                    args.width,
+                    args.height,
                 )
             else:
                 persil_wms_probe(
