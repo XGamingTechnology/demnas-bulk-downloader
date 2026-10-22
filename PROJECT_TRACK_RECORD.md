@@ -762,6 +762,49 @@ This test is **PENDING**.
 
 ---
 
+
+# 16A. CHECKPOINT — Tanjung Kelayang / Belitung
+
+Preset BBOX:
+
+```text
+107.55,-2.65,107.78,-2.45
+```
+
+Verified BATNAS raster:
+
+```text
+size                : 166 x 144
+CRS                 : EPSG:4326
+dtype               : float32
+minimum elevation   : ~-40.43 m
+maximum topography  : ~+131.77 m
+water pixels        : 17,150 / 23,904
+max positive depth  : ~40.43 m
+mean positive depth : ~22.87 m
+```
+
+Verified detailed vector coverage from `PKLP/DataBatimetri_BIG_2017`:
+
+| Dataset | Features |
+|---|---:|
+| LLN 1:500K sounding points | 19 |
+| LLN 1:500K depth contours | 12 |
+| LLN 1:500K depth areas | 12 |
+| LLN 1:250K | 0 |
+| LLN 1:50K | 0 |
+| LPI 1:25K | 0 |
+| LPI 1:50K | 0 |
+| LPI 1:250K | 0 |
+| HIPSOGRAFI_WLP_25K | 0 |
+
+Conclusion:
+
+> The legacy/multi-scale BIG vector service does **not** provide the desired
+> high-detail LPI/HIPS coverage for this Tanjung Kelayang AOI. The next source
+> to investigate is the dedicated public **SIBATNAS "Tanjung Kelayang"**
+> dataset rather than repeatedly probing these empty LPI/HIPS layers.
+
 # 17. Recommended Priority Order From Here
 
 ## Priority A — Finish current bathymetry validation
