@@ -239,6 +239,52 @@ def download_atlas_vector(
     return len(features)
 
 
+def make_bathymetry_only(
+    src_path: Path,
+    dst_path: Path,
+    positive_depth: bool = False,
+) -> None:
+    try:
+        import numpy as np
+        import rasterio
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "Mode bathymetry-only membutuhkan numpy dan rasterio."
+        ) from exc
+
+    with rasterio.open(src_path) as src:
+        data = src.read(1).astype("float32")
+        profile = src.profile.copy()
+
+        # BATNAS uses elevation relative to sea level: underwater values are
+        # negative and land/topography values are positive.
+        water = data < 0
+        out = np.full(data.shape, -9999.0, dtype="float32")
+        if positive_depth:
+            out[water] = -data[water]
+        else:
+            out[water] = data[water]
+
+        profile.update(
+            dtype="float32",
+            count=1,
+            nodata=-9999.0,
+            compress="deflate",
+        )
+
+        dst_path.parent.mkdir(parents=True, exist_ok=True)
+        with rasterio.open(dst_path, "w", **profile) as dst:
+            dst.write(out, 1)
+
+        print(f"Bathymetry-only GeoTIFF saved: {dst_path}")
+        print(f"water_pixels: {int(water.sum())}/{water.size}")
+        if water.any():
+            vals = out[water]
+            print(f"water_min: {float(vals.min())}")
+            print(f"water_max: {float(vals.max())}")
+            print(f"water_mean: {float(vals.mean())}")
+
+
 def validate_geotiff(path: Path) -> None:
     try:
         import rasterio
@@ -299,6 +345,16 @@ def main() -> int:
         action="store_true",
         help="Save BATNAS ImageServer metadata.",
     )
+    ap.add_argument(
+        "--bathymetry-only",
+        action="store_true",
+        help="Create an additional GeoTIFF containing only underwater values (< 0).",
+    )
+    ap.add_argument(
+        "--depth-positive",
+        action="store_true",
+        help="With --bathymetry-only, store water depth as positive metres.",
+    )
     args = ap.parse_args()
 
     session = create_session()
@@ -322,6 +378,16 @@ def main() -> int:
         )
         save_json(out.with_suffix(".json"), manifest)
         validate_geotiff(out)
+
+        if args.bathymetry_only:
+            suffix = "_depth_positive.tif" if args.depth_positive else "_bathymetry_only.tif"
+            bathy_out = out.with_name(out.stem + suffix)
+            make_bathymetry_only(
+                out,
+                bathy_out,
+                positive_depth=args.depth_positive,
+            )
+            validate_geotiff(bathy_out)
 
         point = args.sample
         if point is None:
