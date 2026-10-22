@@ -685,11 +685,50 @@ analysis/
 └── depth_summary.json
 ```
 
-## Current status
+## Analyzer verification — Selat Bangka
 
-Analyzer has been committed but **has not yet been executed/verified on the VPS**.
+The vector analyzer has now been executed successfully on the VPS.
 
-That is a good immediate continuation step.
+Verified sounding statistics from **717 LPI 1:50K points**:
+
+```text
+min_m                : 0.1
+max_m                : 74.0
+mean_m               : 13.631520223152021
+median_m             : 13.6
+unique_depth_values  : 237
+```
+
+Verified contour statistics from **136 LPI 1:50K contours**:
+
+```text
+min_m                : 2.0
+max_m                : 45.0
+mean_m               : 16.360294117647058
+median_m             : 15.0
+unique_depth_values  : 11
+```
+
+Outputs:
+
+```text
+output/bathymetry_detail/bangka-strait/analysis/soundings.csv
+output/bathymetry_detail/bangka-strait/analysis/depth_contours.csv
+output/bathymetry_detail/bangka-strait/analysis/depth_summary.json
+```
+
+Comparison with the previously verified BATNAS bathymetry-only raster:
+
+```text
+BATNAS max depth        ~75.81 m
+LPI50K max sounding      74.00 m
+
+BATNAS mean water depth  ~14.83 m
+LPI50K mean sounding     ~13.63 m
+```
+
+These are not expected to match exactly because the raster and sounding points
+represent different sampling models, but the ranges are broadly consistent.
 
 ---
 
