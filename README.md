@@ -4,6 +4,29 @@ Downloader Python untuk mengambil **DEMNAS resmi Badan Informasi Geospasial (BIG
 
 Default: **Jawa Timur**.
 
+
+## Project Status & Continuation Guide
+
+For the current multi-source development status, verified checkpoints, exact
+continuation commands, known limitations, and next priorities, read:
+
+```text
+PROJECT_TRACK_RECORD.md
+```
+
+This is the **master handoff document** for continuing work on:
+
+- DEMNAS
+- BHUMI ATR/BPN
+- BHUMI 36-layer bulk catalog
+- Persil/Bidang Tanah raster
+- BIG BATNAS bathymetry
+- detailed LPI/LLN bathymetry vectors
+- current Bangka/Belitung validation work
+
+When resuming this project in a new session, start with
+`PROJECT_TRACK_RECORD.md` before repeating probes or changing adapters.
+
 ## Sumber resmi
 
 - DEMNAS ImageServer:
