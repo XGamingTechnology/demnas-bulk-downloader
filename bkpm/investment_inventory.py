@@ -66,6 +66,29 @@ def kind(url: str) -> str:
         return "kawasan_detail"
     return "catalog_index"
 
+def prioritize_detail_links(urls) -> list[str]:
+    """Prefer recent investment sources over older quarterly archives.
+
+    Preserves all discovered URLs and only changes which ones are inspected
+    first when --max-details limits the run. Never fabricates URLs.
+    """
+    def rank(url: str) -> tuple:
+        path = urlparse(url).path.lower()
+        if kind(url) == "peluang_proyek_detail":
+            return (1, 0, url)
+        if kind(url) == "realisasi_dataset_detail":
+            match = re.search(r"tahun-(20\\d{2})", path)
+            year = int(match.group(1)) if match else 0
+            if year >= 2025:
+                return (0, -year, url)
+            if year > 0:
+                return (3, -year, url)
+            return (2, 0, url)
+        return (4, 0, url)
+
+    return sorted(set(urls), key=rank)
+
+
 def links_from(html: str, base: str) -> list[str]:
     soup = BeautifulSoup(html, "html.parser")
     urls = set()
@@ -217,7 +240,7 @@ def main(argv: list[str] | None = None) -> int:
                 discovered.add(link)
 
     if not args.index_only:
-        for link in sorted(discovered)[:args.max_details]:
+        for link in prioritize_detail_links(discovered)[:args.max_details]:
             visit(link, "detail")
 
     summary = {
@@ -226,6 +249,9 @@ def main(argv: list[str] | None = None) -> int:
         "page_outcomes": dict(Counter(p["status"] for p in pages)),
         "total_page_requests": len(pages),
         "unique_detail_url_candidates": len(discovered),
+        "candidate_types": dict(Counter(kind(u) for u in discovered)),
+        "selection_policy": "recent datasets first (2026/2025), project details, then historical years",
+        "selected_detail_urls": [] if args.index_only else prioritize_detail_links(discovered)[:args.max_details],
         "detail_requests": sum(p["role"] == "detail" for p in pages),
         "limitations": [
             "HTML may be dynamically rendered; missing links are not evidence of no data",
@@ -235,7 +261,6 @@ def main(argv: list[str] | None = None) -> int:
             "Currency and project coordinates require QC before statistical/GIS use",
         ],
     }
-    (args.output / "audit.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
     (args.output / "pages.json").write_text(json.dumps(pages, indent=2, ensure_ascii=False), encoding="utf-8")
     (args.output / "discovered_urls.txt").write_text("\n".join(sorted(discovered)) + "\n", encoding="utf-8")
     save_csv(args.output / "pages.csv", pages, ["url", "kind", "role", "status", "http_status", "error"])
