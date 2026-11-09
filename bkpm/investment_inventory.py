@@ -77,7 +77,7 @@ def prioritize_detail_links(urls) -> list[str]:
         if kind(url) == "peluang_proyek_detail":
             return (1, 0, url)
         if kind(url) == "realisasi_dataset_detail":
-            match = re.search(r"tahun-(20\\d{2})", path)
+            match = re.search(r"tahun-(20\d{2})", path)
             year = int(match.group(1)) if match else 0
             if year >= 2025:
                 return (0, -year, url)
