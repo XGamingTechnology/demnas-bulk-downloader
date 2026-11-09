@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Pratinjau spasial peluang investasi dan komoditas publik BKPM, dengan audit kualitas data.">
+  <title>BKPM Spatial Investment Explorer — Pratinjau</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <style>
+    :root { color-scheme: light; --ink:#163048; --muted:#5b7180; --line:#dbe4e8; --bg:#f4f7f8; --orange:#e0782e; --teal:#178e89; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:system-ui,-apple-system,"Segoe UI",sans-serif; color:var(--ink); background:var(--bg); }
+    header { padding:16px 22px; background:#143b52; color:white; display:flex; flex-wrap:wrap; align-items:center; gap:15px; justify-content:space-between; }
+    header h1 { margin:0; font-size:20px; letter-spacing:-.02em; }
+    header p { margin:3px 0 0; color:#b9d2db; font-size:12px; }
+    header a { color:#d1e9f8; font-size:12px; }
+    main { display:grid; grid-template-columns:340px minmax(0,1fr); min-height:calc(100vh - 77px); }
+    aside { padding:16px; overflow:auto; border-right:1px solid var(--line); background:white; }
+    .stats { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:15px; }
+    .stat { border:1px solid var(--line); border-radius:9px; padding:11px; }
+    .stat strong { display:block; font-size:23px; }
+    .stat span { color:var(--muted); font-size:11px; }
+    .warn { background:#fff8ed; border:1px solid #e8d5b0; padding:10px; border-radius:8px; color:#674a1e; font-size:12px; }
+    .group { margin-top:16px; }
+    label { display:block; margin-bottom:6px; font-size:12px; font-weight:650; }
+    select,input[type="search"] { width:100%; border:1px solid #becbd2; padding:9px 10px; background:white; border-radius:7px; font:inherit; font-size:13px; }
+    .choice { display:flex; align-items:center; gap:8px; margin:10px 0; font-size:13px; }
+    .choice label { margin:0; font-weight:normal; }
+    .choice input { accent-color:var(--ink); }
+    .dot { width:11px; height:11px; border-radius:50%; display:inline-block; flex:none; }
+    .dot.orange { background:var(--orange); } .dot.teal { background:var(--teal); }
+    .subtle { margin:14px 0 0; font-size:12px; line-height:1.5; color:var(--muted); }
+    .status { border-top:1px solid var(--line); margin-top:18px; padding-top:12px; font-size:12px; }
+    .status.error { color:#aa2d28; }
+    .map-wrap { min-width:0; position:relative; }
+    #map { height:calc(100vh - 77px); width:100%; background:#e5edef; }
+    .map-tip { position:absolute; z-index:700; top:12px; right:12px; background:#fff; padding:9px 11px; border:1px solid var(--line); border-radius:9px; box-shadow:0 3px 12px #0002; font-size:12px; max-width:270px; }
+    .pop-title { font-weight:750; margin-bottom:6px; font-size:14px; }
+    .pop-row { margin:4px 0; font-size:12px; }
+    .pop-row strong { color:#344b5c; }
+    .pop-entry { border-bottom:1px solid #e3e9ed; margin-bottom:8px; padding-bottom:8px; }
+    .pop-entry:last-child { border-bottom:none; margin-bottom:0; padding-bottom:0; }
+    .missing { font-size:12px; color:#334c61; padding-left:18px; max-height:135px; overflow:auto; }
+    button { border:1px solid #aabdc6; border-radius:8px; background:#fff; padding:9px 11px; font-size:12px; cursor:pointer; }
+    button:hover { background:#edf5f7; }
+    @media (max-width:760px) {
+      main { display:flex; flex-direction:column; }
+      aside { overflow:visible; }
+      #map { height:65vh; min-height:400px; }
+      .map-tip { top:8px; right:8px; max-width:210px; }
+    }
+  </style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>BKPM | Spatial Investment Explorer</h1>
+    <p>Pratinjau WebGIS berbasis snapshot data peluang investasi dan komoditas publik</p>
+  </div>
+  <a href="https://regionalinvestment.bkpm.go.id/" rel="noreferrer" target="_blank">Sumber: Regional Investment BKPM</a>
+</header>
+<main>
+  <aside aria-label="Filter dan audit data">
+    <div class="stats">
+      <div class="stat"><strong id="totalRecords">—</strong><span>Record proyek API</span></div>
+      <div class="stat"><strong id="mappedProjects">—</strong><span>Titik proyek</span></div>
+      <div class="stat"><strong id="commodityPoints">—</strong><span>Titik komoditas</span></div>
+      <div class="stat"><strong id="missingCoords">—</strong><span>Proyek tanpa koordinat</span></div>
+    </div>
+    <div class="warn">Titik dari sumber BKPM belum divalidasi sebagai lokasi tapak sebenarnya. Lima proyek tanpa koordinat tidak diberi lokasi buatan.</div>
+    <div class="group">
+      <label>Layer peta</label>
+      <div class="choice"><input id="showProjects" type="checkbox" checked><span class="dot orange"></span><label for="showProjects">Peluang investasi</label></div>
+      <div class="choice"><input id="showCommodities" type="checkbox" checked><span class="dot teal"></span><label for="showCommodities">Komoditas</label></div>
+    </div>
+    <div class="group">
+      <label for="search">Cari nama proyek</label>
+      <input id="search" type="search" placeholder="Contoh: bioetanol">
+    </div>
+    <div class="group">
+      <label for="province">Provinsi proyek</label>
+      <select id="province"><option value="">Semua provinsi</option></select>
+    </div>
+    <div class="group">
+      <label for="sector">Sektor proyek</label>
+      <select id="sector"><option value="">Semua sektor</option></select>
+    </div>
+    <div class="group">
+      <button id="reset">Bersihkan filter & tampilkan Indonesia</button>
+      <p id="filtered" class="subtle" aria-live="polite">—</p>
+    </div>
+    <div class="group">
+      <label>Proyek tanpa koordinat</label>
+      <ol class="missing" id="missingList"></ol>
+    </div>
+    <p class="subtle">Nilai investasi, sektor, dan status ditampilkan sebagaimana tercatat pada sumber. Angka peluang investasi bukan realisasi PMA/PMDN LKPM. Jika beberapa proyek berbagi koordinat, informasi proyek digabung dalam satu popup tanpa menghapus record.</p>
+    <div class="status" id="status" role="status">Memuat data lokal…</div>
+  </aside>
+  <div class="map-wrap">
+    <div id="map" aria-label="Peta interaktif peluang investasi dan komoditas"></div>
+    <div class="map-tip">Oranye: proyek investasi. Hijau kebiruan: komoditas. Klik titik untuk melihat atribut.</div>
+  </div>
+</main>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+"use strict";
+(async function () {
+  const el = (id) => document.getElementById(id);
+  const status = el("status");
+  if (!window.L) {
+    status.textContent = "Leaflet gagal dimuat. Periksa koneksi CDN.";
+    status.classList.add("error");
+    return;
+  }
+  const map = L.map("map", {zoomControl:true}).setView([-2.5, 118], 5);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 18,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>'
+  }).addTo(map);
+  const projectLayer = L.layerGroup().addTo(map);
+  const commodityLayer = L.layerGroup().addTo(map);
+
+  function row(label, value) {
+    const div = document.createElement("div");
+    div.className = "pop-row";
+    const strong = document.createElement("strong");
+    strong.textContent = label + ": ";
+    const span = document.createElement("span");
+    span.textContent = value === undefined || value === null || String(value).trim() === "" ? "Tidak tersedia" : String(value);
+    div.append(strong, span);
+    return div;
+  }
+  function infoEntry(feature) {
+    const p = feature.properties || {};
+    const block = document.createElement("div");
+    block.className = "pop-entry";
+    const title = document.createElement("div");
+    title.className = "pop-title";
+    title.textContent = p.nama || "Proyek tanpa nama";
+    block.append(title,
+      row("ID BKPM", p.source_project_id),
+      row("Provinsi", p.nama_provinsi),
+      row("Sektor", p.nama_sektor || p.nama_sektor_peluang),
+      row("Nilai investasi (sumber)", p.nilai_investasi),
+      row("Status proyek (sumber)", p.status_proyek)
+    );
+    return block;
+  }
+  function commodityPopup(feature) {
+    const p = feature.properties || {};
+    const wrapper = document.createElement("div");
+    const title = document.createElement("div");
+    title.className = "pop-title";
+    title.textContent = "Komoditas BKPM";
+    wrapper.append(title);
+    Object.entries(p).slice(0, 12).forEach(([key, value]) => {
+      if (typeof value !== "object") wrapper.appendChild(row(key, value));
+    });
+    return wrapper;
+  }
+  function pointKey(coords) {
+    return Number(coords[0]).toFixed(7) + "," + Number(coords[1]).toFixed(7);
+  }
+  function validPoint(f) {
+    const c = f && f.geometry && f.geometry.coordinates;
+    return f.geometry.type === "Point" && Array.isArray(c) &&
+      c.length >= 2 && Number.isFinite(Number(c[0])) && Number.isFinite(Number(c[1])) &&
+      Math.abs(Number(c[0])) <= 180 && Math.abs(Number(c[1])) <= 90;
+  }
+  function options(id, values) {
+    const target = el(id);
+    const sorted = [...new Set(values.filter((x) => typeof x === "string" && x.trim()))]
+      .sort((a, b) => a.localeCompare(b, "id"));
+    for (const value of sorted) {
+      const o = document.createElement("option");
+      o.value = value;
+      o.textContent = value;
+      target.appendChild(o);
+    }
+  }
+  async function readJson(path) {
+    const response = await fetch(path, {cache:"no-store"});
+    if (!response.ok) throw new Error(path + ": HTTP " + response.status);
+    return response.json();
+  }
+
+  try {
+    const [projects, commodities, summary, missing] = await Promise.all([
+      readJson("./data/bkpm_opportunities_api_points.geojson"),
+      readJson("./data/bkpm_komoditas_original.geojson"),
+      readJson("./data/snapshot.json"),
+      readJson("./data/projects_without_coordinates.json"),
+    ]);
+    if (projects.type !== "FeatureCollection" || commodities.type !== "FeatureCollection")
+      throw new Error("File GeoJSON bukan FeatureCollection");
+    const projectFeatures = projects.features.filter(validPoint);
+    const commodityFeatures = commodities.features.filter(validPoint);
+    el("totalRecords").textContent = summary.source_record_count;
+    el("mappedProjects").textContent = projectFeatures.length;
+    el("commodityPoints").textContent = commodityFeatures.length;
+    el("missingCoords").textContent = missing.length;
+    options("province", projectFeatures.map((f) => f.properties?.nama_provinsi));
+    options("sector", projectFeatures.map((f) => f.properties?.nama_sektor));
+    for (const p of missing) {
+      const li = document.createElement("li");
+      li.textContent = (p.id_peluang || "—") + " — " + (p.nama || "Tanpa nama");
+      el("missingList").appendChild(li);
+    }
+    const bounds = L.latLngBounds([]);
+    function render() {
+      projectLayer.clearLayers();
+      commodityLayer.clearLayers();
+      const province = el("province").value;
+      const sector = el("sector").value;
+      const query = el("search").value.trim().toLocaleLowerCase("id");
+      const selected = projectFeatures.filter((feature) => {
+        const p = feature.properties || {};
+        return (!province || p.nama_provinsi === province)
+          && (!sector || p.nama_sektor === sector)
+          && (!query || String(p.nama || "").toLocaleLowerCase("id").includes(query));
+      });
+      const groups = new Map();
+      for (const f of selected) {
+        const k = pointKey(f.geometry.coordinates);
+        if (!groups.has(k)) groups.set(k, []);
+        groups.get(k).push(f);
+      }
+      if (el("showProjects").checked) {
+        for (const entries of groups.values()) {
+          const c = entries[0].geometry.coordinates;
+          const wrapper = document.createElement("div");
+          for (const f of entries) wrapper.appendChild(infoEntry(f));
+          const marker = L.circleMarker([Number(c[1]), Number(c[0])], {
+            radius: entries.length > 1 ? 9 : 6, weight:2,
+            color:"#fff", fillColor:"#e0782e", fillOpacity:.88
+          });
+          marker.bindPopup(wrapper, {maxWidth:340, maxHeight:350});
+          marker.addTo(projectLayer);
+        }
+      }
+      if (el("showCommodities").checked) {
+        for (const f of commodityFeatures) {
+          const c = f.geometry.coordinates;
+          const marker = L.circleMarker([Number(c[1]), Number(c[0])], {
+            radius:4, weight:1, color:"#fff", fillColor:"#178e89", fillOpacity:.8
+          });
+          marker.bindPopup(commodityPopup(f), {maxWidth:310});
+          marker.addTo(commodityLayer);
+        }
+      }
+      el("filtered").textContent = selected.length + " proyek cocok, " +
+        groups.size + " lokasi titik unik. " +
+        (el("showProjects").checked ? "Layer proyek aktif." : "Layer proyek disembunyikan.");
+    }
+    for (const id of ["search", "province", "sector"]) {
+      el(id).addEventListener(id === "search" ? "input" : "change", render);
+    }
+    for (const id of ["showProjects", "showCommodities"]) {
+      el(id).addEventListener("change", render);
+    }
+    el("reset").addEventListener("click", () => {
+      el("search").value = "";
+      el("province").value = "";
+      el("sector").value = "";
+      el("showProjects").checked = true;
+      el("showCommodities").checked = true;
+      render();
+      map.setView([-2.5, 118], 5);
+    });
+    render();
+    status.textContent = "Snapshot: " + (summary.source_checked_at_utc || "waktu tidak tersedia") +
+      " • QA lokal: " + (summary.quality_audited_utc || "tidak tersedia") +
+      " • Tidak ada data titik yang direkayasa.";
+  } catch (err) {
+    status.textContent = "Gagal membaca paket WebGIS: " + err.message +
+      ". Buka melalui HTTP server lokal, bukan file://.";
+    status.classList.add("error");
+  }
+})();
+</script>
+</body>
+</html>
