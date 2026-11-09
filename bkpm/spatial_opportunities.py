@@ -17,6 +17,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .investment_inventory import Client, SEEDS, kind, parse_detail, safe_url
+from .browser_render import BrowserRenderer
 
 
 def project_feature(record: dict) -> tuple[dict | None, str]:
@@ -63,6 +64,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path,
                         default=Path("data/bkpm/spatial"))
     parser.add_argument("--delay", type=float, default=1.5)
+    parser.add_argument("--render-browser", action="store_true",
+                        help="Render public detail pages in Chromium when HTML has no coordinates")
     args = parser.parse_args(argv)
     args.output.mkdir(parents=True, exist_ok=True)
 
@@ -74,6 +77,10 @@ def main(argv: list[str] | None = None) -> int:
                 urls.add(u)
 
     client = Client(args.delay)
+    browser = None
+    if args.render_browser:
+        browser = BrowserRenderer()
+        browser.__enter__()
     features: list[dict] = []
     audit: list[dict] = []
     for url in sorted(urls):
@@ -83,7 +90,16 @@ def main(argv: list[str] | None = None) -> int:
             record = parse_detail(html, url)
             record["url"] = url
             feature, quality = project_feature(record)
-            info.update(http_status=status, html_sha256=sha, status=quality)
+            info.update(http_status=status, html_sha256=sha, status=quality,
+                        extraction_method="http_html")
+            if not feature and browser is not None:
+                rendered, browser_status, wait_state = browser.get_html(url)
+                rendered_record = parse_detail(rendered, url)
+                rendered_record["url"] = url
+                feature, quality = project_feature(rendered_record)
+                info.update(status=quality, extraction_method="chromium_render",
+                            browser_http_status=browser_status,
+                            browser_wait_state=wait_state)
             if feature:
                 features.append(feature)
             else:
@@ -93,13 +109,16 @@ def main(argv: list[str] | None = None) -> int:
         audit.append(info)
         print(f"{info['status']}: {url}", flush=True)
 
+    if browser is not None:
+        browser.__exit__(None, None, None)
+
     output = {"type": "FeatureCollection", "features": features}
     (args.output / "bkpm_opportunities_points.geojson").write_text(
         json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     with (args.output / "point_audit.csv").open("w", encoding="utf-8-sig", newline="") as file:
         writer = csv.DictWriter(file, fieldnames=["source_url", "status", "http_status",
-                                                  "html_sha256", "reason"], extrasaction="ignore")
+                                                  "html_sha256", "reason", "extraction_method", "browser_http_status", "browser_wait_state"], extrasaction="ignore")
         writer.writeheader()
         writer.writerows(audit)
     summary = {
@@ -108,6 +127,7 @@ def main(argv: list[str] | None = None) -> int:
         "point_features_exported": len(features),
         "limits": [
             "Only explicitly observed project URLs",
+            "Optional Chromium rendering when --render-browser is specified",
             "Points from publisher coordinates have NOT been site-validated",
             "Not realized investment, not boundaries, not footprint polygons",
             "Coordinates interpreted as longitude/latitude EPSG:4326",
