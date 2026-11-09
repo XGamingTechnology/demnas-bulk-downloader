@@ -10,6 +10,11 @@ class ProjectDiscoveryTests(unittest.TestCase):
         self.assertEqual(rows[0]["url"],
                          "https://regionalinvestment.bkpm.go.id/peluang_investasi/detailed/1267")
 
+    def test_external_url_in_markup_never_becomes_local_route(self):
+        base = "https://regionalinvestment.bkpm.go.id/peluang_investasi"
+        html = '<script>const url = "https://example.org/peluang_investasi/detailed/10";</script>'
+        self.assertEqual(observed_links(html, base), [])
+
     def test_reject_unsafe_and_unobserved(self):
         self.assertIsNone(accepted_project_url("https://example.org/peluang_investasi/detailed/1267"))
         self.assertIsNone(accepted_project_url("http://regionalinvestment.bkpm.go.id/peluang_investasi/detailed/1267"))
