@@ -1,4 +1,64 @@
-# Integrasi BKPM Geoportal × DEMNAS (eksperimen)
+# BKPM — panduan modul dan checkpoint eksperimen
+
+**Status pada 9 November 2026:** 185 record peluang investasi diambil melalui 21 halaman endpoint publik, 180 titik proyek, lima record tanpa koordinat usable, serta 142 titik komoditas. Audit lokal tidak menemukan mismatch ID/geometri; 37 unit test lulus; paket WebGIS statis berhasil dibuat tetapi **belum diverifikasi secara visual di browser**. Ini adalah bukti historis dari VPS, bukan jaminan total data real-time.
+
+## Baca yang mana?
+
+| Dokumen | Untuk apa |
+|---|---|
+| [RUNBOOK.md](RUNBOOK.md) | **Mulai dari sini:** perintah VPS, install, API, QA, WebGIS preview, troubleshooting |
+| [CHECKPOINT_2026-11-09.md](CHECKPOINT_2026-11-09.md) | Rekaman hasil pengujian, daftar output, keterbatasan, keputusan dan prioritas lanjutan |
+| [DATA_DICTIONARY.md](DATA_DICTIONARY.md) | Makna atribut, sumber data, koordinat, kualitas, nilai yang kosong, larangan interpretasi |
+| [INVESTMENT_README.md](INVESTMENT_README.md) | Tahap riset sebelumnya: inventaris metadata HTML BKPM/Satu Data, bukan pengunduhan massal CSV |
+| [Panduan seluruh repository](../docs/REPOSITORY_GUIDE.md) | Posisi BKPM dibanding DEMNAS, BHUMI, Minerba dan penelitian DAS Kuranji |
+
+## Jalur kerja utama yang **sudah teruji**
+
+Dari worktree BKPM yang ada, jalankan:
+
+~~~bash
+cd ~/geo-experiments/bkpm-demnas
+git pull --ff-only
+source .venv/bin/activate
+python -m unittest discover -s bkpm/tests -v
+
+# Bila snapshot data/bkpm/spatial_api sudah ada, TIDAK perlu unduh ulang API:
+python -m bkpm.spatial_quality
+python -m bkpm.webgis_package
+~~~
+
+Untuk **snapshot baru** (mengambil data publik dari internet dengan jeda dan mengganti output default; cadangkan folder lebih dulu):
+
+~~~bash
+python -m bkpm.spatial_api_collect --max-pages 21 --delay 2
+python -m bkpm.spatial_quality
+python -m bkpm.webgis_package
+~~~
+
+Untuk preview, jalankan server HTTP localhost pada port **8876**, bukan port default proxy BHUMI 8765. Cara port-forward SSH lengkap ada di [RUNBOOK.md](RUNBOOK.md). Jangan publish output data ke GitHub Pages sebelum memastikan syarat penggunaan/redistribusi.
+
+### Folder utama hasil
+
+- data/bkpm/spatial_api/: JSON asli proyek, GeoJSON proyek/komoditas, audit pagination.
+- data/bkpm/spatial_api/quality/: QA koordinat, ID dan kelengkapan atribut.
+- data/bkpm/webgis_preview/: index.html, data GeoJSON dan laporan ringkas untuk viewer.
+- Semua data/ diabaikan Git: git pull mengambil **kode**, bukan data.
+
+### Batas ilmiah dan operasional
+
+- Peluang proyek **bukan** realisasi investasi LKPM.
+- Fitur titik yang lolos cek angka/rentang bukan berarti sudah tervalidasi sebagai tapak fisik.
+- Lima proyek tanpa longitude tidak dibuatkan koordinat dugaan.
+- Komoditas merupakan 142 geometri Point dengan CRS sumber OGC:CRS84; bukan bidang/poligon.
+- Batas provinsi dari tiga GeoJSON wilayah lama mencakup 34 entitas; bukan pengganti otomatis batas administrasi terkini.
+- Tidak ada bypass form disclaimer Satu Data, scraping privat, atau brute-force ID proyek.
+- Jangan mereset/menghapus worktree/hasil DEMNAS/BHUMI utama ketika mengerjakan eksperimen BKPM.
+
+---
+
+## Arsip petunjuk tahap awal: audit GeoJSON wilayah dan DEMNAS
+
+Bagian di bawah dipertahankan sebagai dokumentasi pekerjaan pendahulu. Untuk pipeline proyek investasi terbaru, utamakan [RUNBOOK.md](RUNBOOK.md).
 
 Modul ini **tidak mengubah** downloader DEMNAS yang sudah ada. Versi awal hanya memeriksa tiga sumber GeoJSON **yang teramati di Network browser**, bukan melakukan pemindaian endpoint dan bukan menjanjikan endpoint investasi aktif.
 
