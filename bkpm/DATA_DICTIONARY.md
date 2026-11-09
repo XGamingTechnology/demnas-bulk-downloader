@@ -1,6 +1,6 @@
 # BKPM — kamus data, sumber, dan kualitas (checkpoint 2026-11-09)
 
-Dokumen ini dibuat dari struktur parser yang ada dan log audit VPS. **Nama kolom yang belum terlihat dalam kode/log tidak diasumsikan tersedia.** Detail semua nama kolom sebenarnya dapat diperiksa pada record_records.json atau attribute_presence.csv di VPS.
+Dokumen ini dibuat dari struktur parser yang ada dan log audit VPS. **Nama kolom yang belum terlihat dalam kode/log tidak diasumsikan tersedia.** Detail semua nama kolom sebenarnya dapat diperiksa pada region_records.json atau attribute_presence.csv di VPS.
 
 ## Sumber dan dataset
 
