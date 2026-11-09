@@ -23,7 +23,7 @@ LISTINGS = (
 )
 DETAIL_PATH = re.compile(r"^/peluang_investasi/detailed/([0-9]{1,9})/?$")
 ROUTE = re.compile(
-    r"(?:https://regionalinvestment\.bkpm\.go\.id)?"
+    r"(?<![\\w./@-])(?:https://regionalinvestment\\.bkpm\\.go\\.id)?"
     r"/peluang_investasi/detailed/[0-9]{1,9}(?![0-9])", re.I
 )
 NEXT = re.compile(r"^(?:next|selanjutnya|berikutnya|›|»)$", re.I)
@@ -98,6 +98,13 @@ def main(argv: list[str] | None = None) -> int:
         pages.append({
             "listing": listing, "phase": stage, "page_url": page.url,
             "unique_discovered": len({entry["url"] for entry in evidence}),
+            "project_card_headings": page.locator("h3").count(),
+            "selengkapnya_controls": page.get_by_text("Selengkapnya", exact=True).count(),
+            "body_text_length": len(page.locator("body").inner_text(timeout=7000)),
+            "no_information_message": "Belum ada informasi tersedia" in page.locator("body").inner_text(timeout=7000),
+            "sample_headings": " | ".join([
+                s.strip()[:80] for s in page.locator("h3").all_inner_texts()[:8]
+            ])[:500],
         })
 
     with sync_playwright() as pw:
@@ -170,7 +177,9 @@ def main(argv: list[str] | None = None) -> int:
     write_csv(args.output / "evidence.csv", evidence,
               ["url", "source_page", "evidence", "phase"])
     write_csv(args.output / "page_audit.csv", pages,
-              ["listing", "phase", "page_url", "unique_discovered", "error"])
+              ["listing", "phase", "page_url", "unique_discovered",
+               "project_card_headings", "selengkapnya_controls",
+               "body_text_length", "no_information_message", "sample_headings", "error"])
     write_csv(args.output / "network_paths.csv", [
         {"path": key[0], "http_status": key[1], "content_type": key[2],
          "count": n} for key, n in sorted(network.items())
@@ -194,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
         json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8"
     )
     print(json.dumps(summary, indent=2, ensure_ascii=False))
-    return 0
+    return 0 if unique else 2
 
 
 if __name__ == "__main__":
