@@ -17,6 +17,7 @@ from urllib.parse import urljoin, urlparse, urlunparse
 
 import requests
 from bs4 import BeautifulSoup
+from .resource_extract import extract_resources
 
 SINGLE = "https://data.bkpm.go.id/dataset"
 PIR = "https://regionalinvestment.bkpm.go.id"
@@ -180,6 +181,7 @@ def main(argv: list[str] | None = None) -> int:
     client = Client(args.delay)
     pages: list[dict] = []
     details: list[dict] = []
+    resources: list[dict] = []
     discovered = set(SEEDS)
 
     def visit(url: str, role: str):
@@ -195,6 +197,8 @@ def main(argv: list[str] | None = None) -> int:
             discovered.update(new_links)
             if role == "detail":
                 details.append(parsed)
+                if kind(url) == "realisasi_dataset_detail":
+                    resources.extend(extract_resources(html, url))
             print(" OK", code, "links", len(new_links))
         except (RuntimeError, ValueError) as exc:
             rec.update(status="error", error=str(exc))
@@ -236,6 +240,10 @@ def main(argv: list[str] | None = None) -> int:
     (args.output / "discovered_urls.txt").write_text("\n".join(sorted(discovered)) + "\n", encoding="utf-8")
     save_csv(args.output / "pages.csv", pages, ["url", "kind", "role", "status", "http_status", "error"])
     save_csv(args.output / "details.csv", details, ["url", "kind", "title_raw"])
+    save_csv(args.output / "resources.csv", resources, ["dataset_page", "resource_name", "resource_format", "direct_file_url_candidate", "file_download_verified", "note"])
+    summary["advertised_resources_found"] = len(resources)
+    summary["direct_file_url_candidates"] = sum(bool(r["direct_file_url_candidate"]) for r in resources)
+    (args.output / "audit.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
     print("AUDIT", json.dumps(summary, indent=2, ensure_ascii=False))
     return 0 if any(p["status"] == "ok" for p in pages) else 2
 
