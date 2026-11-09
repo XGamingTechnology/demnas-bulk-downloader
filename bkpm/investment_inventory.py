@@ -121,8 +121,8 @@ def parse_detail(html: str, url: str) -> dict:
             "irr_raw": r"\bIRR\s*:\s*([\d.,]+\s*%)",
             "npv_raw": r"\bNPV\s*:\s*(Rp\s*[\d.,]+\s*(?:T|M|Rb|Juta|Miliar|Triliun)?)",
             "payback_raw": r"Payback\s+Period\s*:\s*([\d.,]+\s*Tahun)",
-            "longitude_raw": r"\bLongitude\s*:\s*(-?\d+(?:\.\d+)?)",
-            "latitude_raw": r"\bLatitude\s*:\s*(-?\d+(?:\.\d+)?)",
+            "longitude_raw": r"\bLongitude\s*[:：]?\s*(-?\d+(?:\.\d+)?)",
+            "latitude_raw": r"\bLatitude\s*[:：]?\s*(-?\d+(?:\.\d+)?)",
         }
         row.update({key: capture(text, pat) for key, pat in patterns.items()})
         try:
