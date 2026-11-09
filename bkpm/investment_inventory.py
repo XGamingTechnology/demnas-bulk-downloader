@@ -18,6 +18,7 @@ from urllib.parse import urljoin, urlparse, urlunparse
 import requests
 from bs4 import BeautifulSoup
 from .resource_extract import extract_resources
+from .download_manifest import extract_download_manifest
 
 SINGLE = "https://data.bkpm.go.id/dataset"
 PIR = "https://regionalinvestment.bkpm.go.id"
@@ -205,6 +206,7 @@ def main(argv: list[str] | None = None) -> int:
     pages: list[dict] = []
     details: list[dict] = []
     resources: list[dict] = []
+    download_manifest: list[dict] = []
     discovered = set(SEEDS)
 
     def visit(url: str, role: str):
@@ -222,6 +224,7 @@ def main(argv: list[str] | None = None) -> int:
                 details.append(parsed)
                 if kind(url) == "realisasi_dataset_detail":
                     resources.extend(extract_resources(html, url))
+                    download_manifest.extend(extract_download_manifest(html, url))
             print(" OK", code, "links", len(new_links))
         except (RuntimeError, ValueError) as exc:
             rec.update(status="error", error=str(exc))
@@ -266,6 +269,8 @@ def main(argv: list[str] | None = None) -> int:
     save_csv(args.output / "pages.csv", pages, ["url", "kind", "role", "status", "http_status", "error"])
     save_csv(args.output / "details.csv", details, ["url", "kind", "title_raw"])
     save_csv(args.output / "resources.csv", resources, ["dataset_page", "resource_name", "resource_format", "direct_file_url_candidate", "file_download_verified", "note"])
+    save_csv(args.output / "download_manifest.csv", download_manifest, ["dataset_page", "source_uuid", "upload_file_id", "jsonld_content_url", "button_url", "disclaimer_form_present", "download_verified", "status"])
+    summary["declared_public_download_entries"] = len(download_manifest)
     summary["advertised_resources_found"] = len(resources)
     summary["direct_file_url_candidates"] = sum(bool(r["direct_file_url_candidate"]) for r in resources)
     (args.output / "audit.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
