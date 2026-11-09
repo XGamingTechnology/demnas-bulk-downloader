@@ -40,7 +40,12 @@ def accepted_project_url(raw: str, base: str = "") -> str | None:
 
 
 def observed_links(html: str, page_url: str) -> list[dict]:
-    """Record URLs genuinely present in the *rendered* HTML."""
+    """Accept only exact public detail links in DOM attributes.
+
+    Searching raw HTML for "/detailed/N" is unsafe: the same substring may
+    occur in a foreign-domain URL. For onclick, inspect quoted URL operands
+    as complete strings and apply the same hostname/path validation.
+    """
     soup = BeautifulSoup(html, "html.parser")
     found: dict[str, set[str]] = {}
     for node in soup.select("a[href], [data-href], [data-url], [onclick]"):
@@ -48,23 +53,23 @@ def observed_links(html: str, page_url: str) -> list[dict]:
             value = node.get(attr)
             if not isinstance(value, str):
                 continue
-            direct = accepted_project_url(value, page_url)
-            if direct:
-                found.setdefault(direct, set()).add(f"dom_{attr}")
-            for match in ROUTE.finditer(value):
-                u = accepted_project_url(match.group(0), page_url)
-                if u:
-                    found.setdefault(u, set()).add(f"dom_{attr}_route")
-    for match in ROUTE.finditer(html):
-        u = accepted_project_url(match.group(0), page_url)
-        if u:
-            found.setdefault(u, set()).add("rendered_html_route")
+            if attr == "onclick":
+                candidates = [
+                    item[1] for item in re.findall(
+                        r"""(['"])(.*?)\1""", value, flags=re.S
+                    )
+                ]
+            else:
+                candidates = [value]
+            for raw in candidates:
+                link = accepted_project_url(raw, page_url)
+                if link:
+                    found.setdefault(link, set()).add(f"dom_{attr}")
     return [
         {"url": url, "source_page": page_url,
          "evidence": ",".join(sorted(origins))}
         for url, origins in sorted(found.items())
     ]
-
 
 def write_csv(path: Path, rows: list[dict], keys: list[str]) -> None:
     with path.open("w", newline="", encoding="utf-8-sig") as f:
