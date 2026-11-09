@@ -1,5 +1,9 @@
 # DEMNAS Bulk Downloader
 
+> **📚 Panduan seluruh repository:** [Peta modul, fungsi, status dan cara pakai](docs/REPOSITORY_GUIDE.md). Repository ini juga mencakup [BHUMI](bhumi/README.md), [Minerba ESDM](minerba/README.md), [BKPM](bkpm/README.md), dan [analisis DAS Kuranji](docs/KURANJI_ROADMAP_DELIVERABLE_LAPORAN.md). Modul-modul tersebut berbeda dan tidak harus dijalankan bersama.
+>
+> **Checkpoint eksperimen BKPM (9 November 2026):** API publik 185 record / 21 halaman, 180 titik proyek, 142 titik komoditas; 37 tes lulus dan paket WebGIS statis berhasil dibuat. **UI browser belum diverifikasi dan data hasil ekspor tidak disimpan di Git.** Lihat [checkpoint](bkpm/CHECKPOINT_2026-11-09.md) dan [runbook](bkpm/RUNBOOK.md).
+
 Downloader Python untuk mengambil **DEMNAS resmi Badan Informasi Geospasial (BIG)** per provinsi melalui ArcGIS ImageServer, lalu menyusun tile menjadi satu GeoTIFF yang di-mask menggunakan batas provinsi resmi BIG.
 
 Default: **Jawa Timur**.
