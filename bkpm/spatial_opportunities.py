@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 
 from .investment_inventory import Client, SEEDS, kind, parse_detail, safe_url
 from .browser_render import BrowserRenderer
+from .project_title import get_project_title
 
 
 def project_feature(record: dict) -> tuple[dict | None, str]:
@@ -41,6 +42,7 @@ def project_feature(record: dict) -> tuple[dict | None, str]:
         "source_url": url,
         "source_id": urlparse(url).path.split("/")[-1] if url else None,
         "title_raw": record.get("title_raw"),
+        "title_status": "extracted_candidate_unverified" if record.get("title_raw") else "missing",
         "kbli_raw": record.get("kbli_raw"),
         "investment_raw": record.get("investment_raw"),
         "year_raw": record.get("year_raw"),
@@ -89,6 +91,7 @@ def main(argv: list[str] | None = None) -> int:
             html, status, sha = client.fetch(url)
             record = parse_detail(html, url)
             record["url"] = url
+            record["title_raw"], info["title_method"] = get_project_title(html)
             feature, quality = project_feature(record)
             info.update(http_status=status, html_sha256=sha, status=quality,
                         extraction_method="http_html")
@@ -96,6 +99,7 @@ def main(argv: list[str] | None = None) -> int:
                 rendered, browser_status, wait_state = browser.get_html(url)
                 rendered_record = parse_detail(rendered, url)
                 rendered_record["url"] = url
+                rendered_record["title_raw"], info["title_method"] = get_project_title(rendered)
                 feature, quality = project_feature(rendered_record)
                 info.update(status=quality, extraction_method="chromium_render",
                             browser_http_status=browser_status,
@@ -118,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     with (args.output / "point_audit.csv").open("w", encoding="utf-8-sig", newline="") as file:
         writer = csv.DictWriter(file, fieldnames=["source_url", "status", "http_status",
-                                                  "html_sha256", "reason", "extraction_method", "browser_http_status", "browser_wait_state"], extrasaction="ignore")
+                                                  "html_sha256", "reason", "extraction_method", "browser_http_status", "browser_wait_state", "title_method"], extrasaction="ignore")
         writer.writeheader()
         writer.writerows(audit)
     summary = {
